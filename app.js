@@ -74,8 +74,12 @@ async function sbFetch(path, options = {}) {
 let authToken = sessionStorage.getItem("vanguardToken") || "";
 let currentUserEmail = sessionStorage.getItem("vanguardUserEmail") || "";
 let currentUserId = sessionStorage.getItem("vanguardUserId") || "";
+let currentUserRole = sessionStorage.getItem("vanguardUserRole") || "operador";
 let isBootstrapping = true;
 let saveTimer = null;
+
+function isAdmin() { return currentUserRole === "admin"; }
+function isOperador() { return currentUserRole === "operador"; }
 
 const persistentKeys = [
   "imports",
@@ -245,7 +249,7 @@ function applyRemoteState(data = {}) {
   });
 }
 
-// ── Auth & State — Supabase ──────────────────────────────────
+// ── Auth & State — Supabase (multi-usuário + perfis) ─────────
 
 async function login(email, password) {
   const payload = await sbFetch("/auth/v1/token?grant_type=password", {
@@ -258,38 +262,164 @@ async function login(email, password) {
   sessionStorage.setItem("vanguardToken", authToken);
   sessionStorage.setItem("vanguardUserEmail", currentUserEmail);
   sessionStorage.setItem("vanguardUserId", currentUserId);
+  await selfRegisterIfNeeded();
   await loadRemoteState();
+}
+
+async function loadMemberRole() {
+  try {
+    const rows = await sbFetch(
+      "/rest/v1/vanguard_members?select=role&user_id=eq." + currentUserId + "&limit=1",
+      { method: "GET" }
+    );
+    if (rows && rows.length > 0) {
+      currentUserRole = rows[0].role || "operador";
+    } else {
+      currentUserRole = "operador";
+    }
+    sessionStorage.setItem("vanguardUserRole", currentUserRole);
+  } catch {
+    currentUserRole = "operador";
+  }
 }
 
 async function loadRemoteState() {
   showSyncStatus("Carregando dados da empresa...");
+  await loadMemberRole();
   const rows = await sbFetch(
-    "/rest/v1/vanguard_state?select=data&limit=1",
+    "/rest/v1/vanguard_company_state?select=data&company=eq.vanguard&limit=1",
     { method: "GET" }
   );
   if (rows && rows.length > 0) {
     applyRemoteState(rows[0].data || {});
   }
   isBootstrapping = false;
-  document.getElementById("authEmail").textContent = currentUserEmail;
+  document.getElementById("authEmail").textContent = currentUserEmail + (isAdmin() ? " (Admin)" : "");
   document.getElementById("loginModal").hidden = true;
   showSyncStatus("Dados sincronizados");
+  applyRoleRestrictions();
   consolidateInvoices();
   render();
+  if (isAdmin()) renderUsersView();
 }
 
 async function saveRemoteState() {
   const data = getPersistedState();
-  // Upsert: insere ou atualiza o registro do usuário
-  await sbFetch("/rest/v1/vanguard_state", {
-    method: "POST",
-    headers: {
-      "Prefer": "resolution=merge-duplicates,return=minimal"
-    },
-    body: JSON.stringify({ user_id: currentUserId, data })
+  await sbFetch("/rest/v1/vanguard_company_state?company=eq.vanguard", {
+    method: "PATCH",
+    headers: { "Prefer": "return=minimal" },
+    body: JSON.stringify({ data })
   });
   showSyncStatus("Salvo no banco");
 }
+
+function applyRoleRestrictions() {
+  // Aba E-mail: só admin vê
+  const emailNav = document.querySelector(".nav-item[data-view='email']");
+  const emailView = document.getElementById("email");
+  if (emailNav) emailNav.style.display = isAdmin() ? "" : "none";
+  if (emailView) emailView.style.display = isAdmin() ? "" : "none";
+
+  // Aba Usuários: só admin vê (criada dinamicamente)
+  const usersNav = document.querySelector(".nav-item[data-view='users']");
+  if (usersNav) usersNav.style.display = isAdmin() ? "" : "none";
+
+  // Botões destrutivos: só admin
+  const clearImports = document.getElementById("clearImports");
+  if (clearImports) clearImports.style.display = isAdmin() ? "" : "none";
+  const deleteClients = document.getElementById("deleteSelectedClients");
+  if (deleteClients) deleteClients.style.display = isAdmin() ? "" : "none";
+}
+
+// ── Gestão de usuários (admin only) ──────────────────────────
+async function loadMembers() {
+  const rows = await sbFetch(
+    "/rest/v1/vanguard_members?select=id,email,role,created_at&order=created_at.asc",
+    { method: "GET" }
+  );
+  return rows || [];
+}
+
+async function addMember(email, role) {
+  // Busca o user_id pelo email via admin — precisa que o usuário já exista no Auth
+  // Estratégia: o próprio usuário se auto-cadastra no primeiro login se não for membro
+  // Admin adiciona pelo email; quando esse usuário logar, o sistema encontra o registro
+  await sbFetch("/rest/v1/vanguard_members", {
+    method: "POST",
+    headers: { "Prefer": "return=minimal" },
+    body: JSON.stringify({ user_id: "00000000-0000-0000-0000-000000000000", email, role })
+  });
+}
+
+async function updateMemberRole(memberId, role) {
+  await sbFetch("/rest/v1/vanguard_members?id=eq." + memberId, {
+    method: "PATCH",
+    headers: { "Prefer": "return=minimal" },
+    body: JSON.stringify({ role })
+  });
+}
+
+async function removeMember(memberId) {
+  await sbFetch("/rest/v1/vanguard_members?id=eq." + memberId, {
+    method: "DELETE"
+  });
+}
+
+async function selfRegisterIfNeeded() {
+  // Ao logar, verifica se o usuário já tem registro em vanguard_members
+  // Se não tiver, cria como operador
+  try {
+    const rows = await sbFetch(
+      "/rest/v1/vanguard_members?user_id=eq." + currentUserId + "&limit=1",
+      { method: "GET" }
+    );
+    if (!rows || rows.length === 0) {
+      // Auto-registro como operador
+      await sbFetch("/rest/v1/vanguard_members", {
+        method: "POST",
+        headers: { "Prefer": "return=minimal" },
+        body: JSON.stringify({ user_id: currentUserId, email: currentUserEmail, role: "operador" })
+      });
+    } else {
+      // Atualiza email se mudou
+      if (rows[0].email !== currentUserEmail) {
+        await sbFetch("/rest/v1/vanguard_members?user_id=eq." + currentUserId, {
+          method: "PATCH",
+          headers: { "Prefer": "return=minimal" },
+          body: JSON.stringify({ email: currentUserEmail })
+        });
+      }
+    }
+  } catch (e) {
+    console.warn("selfRegisterIfNeeded:", e.message);
+  }
+}
+
+async function renderUsersView() {
+  const container = document.getElementById("usersViewBody");
+  if (!container) return;
+  container.innerHTML = "<tr><td colspan='3' class='empty'>Carregando...</td></tr>";
+  try {
+    const members = await loadMembers();
+    container.innerHTML = members.length ? members.map((m) => `
+      <tr>
+        <td>${escapeHtml(m.email)}</td>
+        <td>
+          <select data-member-role="${m.id}" ${m.user_id === currentUserId ? "disabled title='Você não pode alterar seu próprio perfil'" : ""}>
+            <option value="operador" ${m.role === "operador" ? "selected" : ""}>Operador</option>
+            <option value="admin" ${m.role === "admin" ? "selected" : ""}>Admin</option>
+          </select>
+        </td>
+        <td>
+          ${m.user_id !== currentUserId ? `<button class="text-button" data-remove-member="${m.id}" style="color:var(--bad)">Remover</button>` : "<span style='color:var(--muted);font-size:0.8rem'>Você</span>"}
+        </td>
+      </tr>
+    `).join("") : "<tr><td colspan='3' class='empty'>Nenhum membro cadastrado.</td></tr>";
+  } catch (e) {
+    container.innerHTML = `<tr><td colspan='3' class='empty'>Erro: ${escapeHtml(e.message)}</td></tr>`;
+  }
+}
+// ─────────────────────────────────────────────────────────────
 
 function showLogin(message = "") {
   isBootstrapping = true;
@@ -302,9 +432,8 @@ function logout() {
   authToken = "";
   currentUserEmail = "";
   currentUserId = "";
-  sessionStorage.removeItem("vanguardToken");
-  sessionStorage.removeItem("vanguardUserEmail");
-  sessionStorage.removeItem("vanguardUserId");
+  currentUserRole = "operador";
+  sessionStorage.clear();
   document.getElementById("authEmail").textContent = "";
   showLogin("Sessão encerrada.");
 }
@@ -2478,6 +2607,97 @@ document.getElementById("logoutButton").addEventListener("click", logout);
 
 document.getElementById("rateDate").value = todayIso();
 
+// Aba Usuários — injetar no HTML dinamicamente (só admin verá)
+(function injectUsersView() {
+  const sidebar = document.querySelector(".sidebar");
+  const content = document.querySelector(".content");
+  if (!sidebar || !content) return;
+
+  const navBtn = document.createElement("button");
+  navBtn.className = "nav-item";
+  navBtn.dataset.view = "users";
+  navBtn.textContent = "Usuários";
+  navBtn.style.display = "none";
+  sidebar.appendChild(navBtn);
+
+  const section = document.createElement("section");
+  section.className = "view";
+  section.id = "users";
+  section.innerHTML = `
+    <div class="section-head">
+      <div>
+        <p class="eyebrow">Controle de acesso</p>
+        <h2>Gestão de usuários</h2>
+      </div>
+      <span class="status-pill" id="membersCount">0 membros</span>
+    </div>
+    <div class="panel">
+      <div class="panel-head">
+        <h3>Membros da equipe Vanguard</h3>
+        <span style="color:var(--muted);font-size:0.82rem">Novos usuários entram como Operador automaticamente ao fazer o primeiro login</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>E-mail</th><th>Perfil</th><th>Ação</th></tr></thead>
+          <tbody id="usersViewBody"><tr><td colspan="3" class="empty">Faça login como admin para ver os membros.</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h3>Sobre os perfis</h3></div>
+      <div style="display:grid;gap:10px;grid-template-columns:1fr 1fr;margin-top:8px;">
+        <div style="background:var(--bg);border-radius:7px;padding:14px;border:1px solid var(--line);">
+          <strong>Admin</strong>
+          <p style="color:var(--muted);font-size:0.85rem;margin:6px 0 0;">Acesso total: todas as abas, configuração de e-mail, exclusão de clientes e importações, gestão de usuários.</p>
+        </div>
+        <div style="background:var(--bg);border-radius:7px;padding:14px;border:1px solid var(--line);">
+          <strong>Operador</strong>
+          <p style="color:var(--muted);font-size:0.85rem;margin:6px 0 0;">Acesso operacional: importação, invoices, clientes, câmbio, contas a receber, recebimentos, auditoria. Sem acesso à aba E-mail.</p>
+        </div>
+      </div>
+    </div>
+  `;
+  content.appendChild(section);
+
+  navBtn.addEventListener("click", () => {
+    document.querySelectorAll(".nav-item, .view").forEach((el) => el.classList.remove("active"));
+    navBtn.classList.add("active");
+    section.classList.add("active");
+    renderUsersView().then(() => {
+      const tbody = document.getElementById("usersViewBody");
+      const count = tbody ? tbody.querySelectorAll("tr").length : 0;
+      const pill = document.getElementById("membersCount");
+      if (pill) pill.textContent = count + " membros";
+    });
+  });
+
+  // Delegação de eventos na tabela de membros
+  section.addEventListener("change", async (event) => {
+    const memberId = event.target.dataset.memberRole;
+    if (!memberId || !isAdmin()) return;
+    try {
+      await updateMemberRole(memberId, event.target.value);
+      showSyncStatus("Perfil atualizado");
+      addLog("success", "Perfil de membro alterado", event.target.value);
+    } catch (e) {
+      showSyncStatus("Erro ao alterar perfil: " + e.message, true);
+    }
+  });
+
+  section.addEventListener("click", async (event) => {
+    const memberId = event.target.dataset.removeMember;
+    if (!memberId || !isAdmin()) return;
+    if (!window.confirm("Remover este membro? Ele perderá o acesso ao sistema.")) return;
+    try {
+      await removeMember(memberId);
+      addLog("success", "Membro removido", memberId);
+      renderUsersView();
+    } catch (e) {
+      showSyncStatus("Erro ao remover: " + e.message, true);
+    }
+  });
+})();
+
 // Inicialização: tenta restaurar sessão salva ou pede login
 (async function init() {
   if (!authToken) { showLogin(); return; }
@@ -2485,10 +2705,12 @@ document.getElementById("rateDate").value = todayIso();
     const user = await sbFetch("/auth/v1/user", { method: "GET" });
     currentUserId = user.id || currentUserId;
     currentUserEmail = user.email || currentUserEmail;
+    currentUserRole = sessionStorage.getItem("vanguardUserRole") || "operador";
     sessionStorage.setItem("vanguardUserId", currentUserId);
     sessionStorage.setItem("vanguardUserEmail", currentUserEmail);
     document.getElementById("loginModal").hidden = true;
     document.getElementById("authEmail").textContent = currentUserEmail;
+    await selfRegisterIfNeeded();
     await loadRemoteState();
   } catch {
     sessionStorage.clear();
