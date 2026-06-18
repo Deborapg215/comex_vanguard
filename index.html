@@ -1,0 +1,510 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Vanguard COMEX Invoices</title>
+    <link rel="stylesheet" href="styles.css?v=14" />
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" defer></script>
+    <script type="module">
+      import * as pdfjsLib from "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.6.82/build/pdf.min.mjs";
+      pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.6.82/build/pdf.worker.min.mjs";
+      window.pdfjsLib = pdfjsLib;
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js" defer></script>
+    <script src="app.js?v=23" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">SaaS COMEX</p>
+        <h1>Vanguard Invoice Hub</h1>
+      </div>
+      <div class="topbar-actions">
+        <span class="status-pill" id="syncStatus">Conectando...</span>
+        <span class="status-pill" id="authEmail"></span>
+        <button class="text-button" id="logoutButton">Sair</button>
+        <button class="icon-button" id="downloadSample" title="Baixar CSV exemplo" aria-label="Baixar CSV exemplo">↓</button>
+        <button class="primary-button" id="exportInvoices">Exportar invoices</button>
+      </div>
+    </header>
+
+    <main class="shell">
+      <aside class="sidebar" aria-label="Navegação">
+        <button class="nav-item active" data-view="overview">Painel</button>
+        <button class="nav-item" data-view="import">Importação</button>
+        <button class="nav-item" data-view="invoices">Invoices</button>
+        <button class="nav-item" data-view="billed">Faturadas</button>
+        <button class="nav-item" data-view="receivables">Contas a receber</button>
+        <button class="nav-item" data-view="receipts">Recebimentos</button>
+        <button class="nav-item" data-view="clients">Clientes</button>
+        <button class="nav-item" data-view="fx">Câmbio</button>
+        <button class="nav-item" data-view="bank">Dados bancários</button>
+        <button class="nav-item" data-view="email">E-mail</button>
+        <button class="nav-item" data-view="audit">Auditoria</button>
+      </aside>
+
+      <section class="content">
+        <section class="view active" id="overview">
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">Dashboard gerencial</p>
+              <h2>Operação financeira</h2>
+            </div>
+            <label class="select-label">
+              Período
+              <select id="periodFilter">
+                <option value="all">Todos</option>
+                <option value="custom">Personalizado</option>
+                <option value="30">Últimos 30 dias</option>
+                <option value="7">Últimos 7 dias</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="panel invoice-toolbar">
+            <div class="form-grid invoice-filters">
+              <label>Cliente<input id="dashboardClientFilter" placeholder="Buscar cliente" /></label>
+              <label>HBL / Invoice<input id="dashboardHblFilter" placeholder="Buscar HBL ou invoice" /></label>
+              <label>Data inicial<input id="dashboardDateFrom" type="date" /></label>
+              <label>Data final<input id="dashboardDateTo" type="date" /></label>
+              <label>Status financeiro<select id="dashboardStatusFilter"><option value="all">Todos</option><option value="ABERTO">Aberto</option><option value="PARCIAL">Parcial</option><option value="PAGO">Pago</option><option value="PAGO_COM_CREDITO">Pago com crédito</option></select></label>
+            </div>
+            <div class="bulk-actions">
+              <button class="text-button" id="clearDashboardFilters">Limpar filtros</button>
+              <button class="primary-button" id="exportDashboardReport">Exportar relatório</button>
+            </div>
+          </div>
+
+          <div class="kpi-grid">
+            <article class="kpi"><span>Total faturado</span><strong id="kpiTotal">R$ 0,00</strong></article>
+            <article class="kpi"><span>Total recebido</span><strong id="kpiReceived">R$ 0,00</strong></article>
+            <article class="kpi"><span>Saldo em aberto</span><strong id="kpiOpenBalance">R$ 0,00</strong></article>
+            <article class="kpi"><span>Recebimentos do m?s</span><strong id="kpiMonthReceipts">R$ 0,00</strong></article>
+            <article class="kpi"><span>T?tulos vencidos</span><strong id="kpiOverdue">0</strong></article>
+            <article class="kpi"><span>Clientes inadimplentes</span><strong id="kpiLateClients">0</strong></article>
+            <article class="kpi"><span>Invoices emitidas</span><strong id="kpiInvoices">0</strong></article>
+            <article class="kpi"><span>HBLs processados</span><strong id="kpiHbl">0</strong></article>
+            <article class="kpi"><span>Câmbio médio</span><strong id="kpiFx">0,0000</strong></article>
+          </div>
+
+          <div class="dashboard-grid">
+            <div class="panel">
+              <div class="panel-head">
+                <h3>Receita por cliente</h3>
+                <span id="clientCount">0 clientes</span>
+              </div>
+              <div class="bars" id="clientBars"></div>
+            </div>
+            <div class="panel">
+              <div class="panel-head">
+                <h3>Total por moeda</h3>
+                <span id="currencyCount">0 moedas</span>
+              </div>
+              <div class="bars" id="currencyBars"></div>
+            </div>
+          </div>
+          <div class="panel" id="clientHistoryPanel">
+            <div class="panel-head">
+              <h3>Histórico financeiro do cliente</h3>
+              <span id="clientHistoryTitle">Clique em um cliente no gráfico</span>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Invoice</th><th>Emissão</th><th>Vencimento</th><th>Status</th><th>Total</th></tr></thead>
+                <tbody id="clientHistory"></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel-head">
+              <h3>Aging list</h3>
+              <span>Saldo vencido por faixa</span>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Faixa</th><th>Quantidade</th><th>Valor</th></tr></thead>
+                <tbody id="agingTable"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section class="view" id="import">
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">Queries operacionais</p>
+              <h2>Importação de planilhas</h2>
+            </div>
+            <span class="status-pill" id="layoutStatus">Aguardando arquivo</span>
+          </div>
+
+          <div class="import-zone" id="dropzone">
+            <input type="file" id="fileInput" accept=".csv,.xlsx,.xls" />
+            <div>
+              <strong>Solte a query aqui ou selecione um arquivo</strong>
+              <p>Colunas esperadas: hbl_no, cliente, cnpj, service_description, calculation_code, entered_amount, entered_curr_total, currency.</p>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <h3>Histórico de importações</h3>
+              <button class="text-button" id="clearImports">Limpar histórico</button>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr><th>Arquivo</th><th>Linhas</th><th>Válidas</th><th>Erros</th><th>Data</th></tr>
+                </thead>
+                <tbody id="importHistory"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <h3>Logs de validação</h3>
+              <span id="logCount">0 registros</span>
+            </div>
+            <div class="log-list" id="logs"></div>
+          </div>
+        </section>
+
+        <section class="view" id="invoices">
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">Consolidação por HBL</p>
+              <h2>Invoices geradas</h2>
+            </div>
+            <div class="segmented">
+              <button class="segment active" data-status="all">Todas</button>
+              <button class="segment" data-status="pendente">Pendentes</button>
+              <button class="segment" data-status="enviado">Enviadas</button>
+              <button class="segment" data-status="erro">Erro</button>
+            </div>
+          </div>
+          <div class="panel invoice-toolbar">
+            <div class="form-grid invoice-filters">
+              <label>Pesquisar<input id="invoiceSearch" placeholder="Invoice, HBL ou cliente" /></label>
+              <label>Data inicial<input id="invoiceDateFrom" type="date" /></label>
+              <label>Data final<input id="invoiceDateTo" type="date" /></label>
+              <label>E-mail do faturamento<input id="billingUserEmail" type="email" placeholder="seuemail@empresa.com.br" /></label>
+            </div>
+            <div class="bulk-actions">
+              <button class="text-button" id="selectAllInvoices">Selecionar todas filtradas</button>
+              <button class="text-button" id="clearInvoiceSelection">Limpar seleção</button>
+              <button class="primary-button" id="bulkSendInvoices">Faturar selecionadas</button>
+              <span id="selectionCount">0 selecionadas</span>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel-head">
+              <h3>Invoice manual</h3>
+              <button class="primary-button" id="addManualInvoice">Cadastrar invoice manual</button>
+            </div>
+            <div class="form-grid">
+              <label>HBL / Invoice<input id="manualHbl" placeholder="HBL ou número manual" /></label>
+              <label>Cliente<input id="manualClient" placeholder="Cliente" /></label>
+              <label>CNPJ<input id="manualCnpj" placeholder="CNPJ ou Não informado" /></label>
+              <label>E-mail cliente<input id="manualEmail" type="email" placeholder="cliente@empresa.com" /></label>
+              <label>Data emissão<input id="manualIssueDate" type="date" /></label>
+              <label>Moeda<select id="manualCurrency"><option>USD</option><option>EUR</option><option>GBP</option><option>CAD</option><option>JPY</option><option>BRL</option></select></label>
+              <label>Serviço<input id="manualService" placeholder="Descrição do serviço" /></label>
+              <label>Item embarcado<input id="manualItem" placeholder="Descrição do item" /></label>
+              <label>Valor original<input id="manualAmount" type="number" step="0.01" min="0" /></label>
+            </div>
+          </div>
+          <div class="invoice-list" id="invoiceList"></div>
+        </section>
+
+        <section class="view" id="clients">
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">Regras comerciais</p>
+              <h2>Clientes especiais</h2>
+            </div>
+            <div class="topbar-actions">
+              <button class="text-button" id="selectAllClients">Selecionar todos</button>
+              <button class="text-button" id="clearClientSelection">Limpar seleção</button>
+              <button class="text-button" id="deleteSelectedClients">Excluir selecionados</button>
+              <span class="chip" id="clientSelectionCount">0 selecionados</span>
+              <button class="primary-button" id="addClient">Salvar cliente</button>
+            </div>
+          </div>
+          <div class="form-grid">
+            <input id="editingClientCnpj" type="hidden" />
+            <label>Cliente<input id="clientName" placeholder="Nome do cliente" /></label>
+            <label>CNPJ<input id="clientCnpj" placeholder="00.000.000/0000-00" /></label>
+            <label>Prazo<input id="clientDue" type="number" value="30" min="0" /></label>
+            <label>Taxa comercial<select id="clientFxProfile"><option value="Vanguard">Vanguard</option><option value="Intermediária">Intermediária (4%)</option><option value="Negociada 3%">Negociada (3%)</option><option value="Negociada 2%">Negociada (2%)</option><option value="Negociada 1%">Negociada (1%)</option></select></label>
+            <label>Taxa negociada (%)<input id="clientFee" type="number" value="0" min="0" step="0.01" /></label>
+            <label>Vigência<input id="clientContract" type="date" /></label>
+            <label>Status<select id="clientStatus"><option value="ativo">Ativo</option><option value="inativo">Inativo</option></select></label>
+          </div>
+          <div class="table-wrap panel">
+            <table>
+              <thead><tr><th></th><th>Cliente</th><th>CNPJ</th><th>Prazo</th><th>Taxa comercial</th><th>Taxa negociada</th><th>Vigência</th><th>Status</th><th>Ações</th></tr></thead>
+              <tbody id="specialClients"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="view" id="receivables">
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">Financeiro</p>
+              <h2>Contas a receber</h2>
+            </div>
+            <div class="topbar-actions">
+              <span class="status-pill" id="receivableCount">0 títulos</span>
+              <button class="primary-button" id="exportReceivablesReport">Exportar relatório</button>
+            </div>
+          </div>
+          <div class="panel invoice-toolbar">
+            <div class="form-grid invoice-filters">
+              <label>HBL / Invoice<input id="receivableSearchHbl" placeholder="Buscar HBL ou invoice" /></label>
+              <label>Cliente<input id="receivableSearchClient" placeholder="Buscar cliente" /></label>
+              <label>Faturamento inicial<input id="receivableDateFrom" type="date" /></label>
+              <label>Faturamento final<input id="receivableDateTo" type="date" /></label>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Cliente</th><th>HBL</th><th>Invoice</th><th>Valor faturado</th><th>Valor recebido</th><th>Saldo</th><th>Emissão</th><th>Vencimento</th><th>Categoria</th><th>Centro de custo</th><th>Status</th><th>Ações</th></tr></thead>
+                <tbody id="receivablesTable"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section class="view" id="receipts">
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">Conciliação financeira</p>
+              <h2>Recebimentos</h2>
+            </div>
+            <div class="topbar-actions">
+              <span class="status-pill" id="receiptCount">0 recibos</span>
+              <button class="primary-button" id="exportReceiptsReport">Exportar relatório</button>
+            </div>
+          </div>
+          <div class="import-zone compact-import" id="receiptDropzone">
+            <input type="file" id="receiptFileInput" accept=".csv,.xlsx,.xls" />
+            <div>
+              <strong>Importar Query de Recibos</strong>
+              <p>Colunas esperadas: file_no_m, invoice_no_char, receipt_no, payer_name, hbl_no, receipt_amount, posted_date, bank_account, imp_exp.</p>
+            </div>
+          </div>
+          <div class="panel invoice-toolbar">
+            <div class="form-grid invoice-filters">
+              <label>HBL<input id="receiptSearchHbl" placeholder="Buscar HBL" /></label>
+              <label>Cliente<input id="receiptSearchClient" placeholder="Buscar cliente" /></label>
+              <label>Invoice<input id="receiptSearchInvoice" placeholder="Buscar invoice" /></label>
+              <label>Recibo<input id="receiptSearchNo" placeholder="Número do recibo" /></label>
+              <label>Data inicial<input id="receiptDateFrom" type="date" /></label>
+              <label>Data final<input id="receiptDateTo" type="date" /></label>
+              <label>Status<select id="receiptStatusFilter"><option value="all">Todos</option><option value="CONCILIADO">Conciliado</option><option value="NAO_CONCILIADO">Não conciliado</option><option value="ABERTO">Aberto</option><option value="PARCIAL">Parcial</option><option value="PAGO">Pago</option><option value="PAGO_COM_CREDITO">Pago com crédito</option></select></label>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>HBL</th><th>Invoice</th><th>Recibo</th><th>Cliente</th><th>Valor recebido</th><th>Data recebimento</th><th>Conta bancária</th><th>Status conciliação</th><th>Ações</th></tr></thead>
+                <tbody id="receiptsTable"></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="panel" id="receiptDetailPanel">
+            <div class="panel-head">
+              <h3>Detalhe da conciliação</h3>
+              <span id="receiptDetailTitle">Clique em um recibo</span>
+            </div>
+            <div class="doc-grid" id="receiptDetail"></div>
+          </div>
+        </section>
+
+        <section class="view" id="billed">
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">Histórico de faturamento</p>
+              <h2>Invoices faturadas</h2>
+            </div>
+            <span class="status-pill" id="billedCount">0 faturadas</span>
+          </div>
+          <div class="panel">
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>HBL</th><th>Cliente</th><th>Valor</th><th>E-mail cliente</th><th>Faturado por</th><th>Data</th><th>Modo</th></tr></thead>
+                <tbody id="billedInvoices"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section class="view" id="fx">
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">PTAX e taxas comerciais</p>
+              <h2>Tabela de câmbio</h2>
+            </div>
+            <button class="primary-button" id="addRate">Salvar taxa</button>
+          </div>
+          <div class="form-grid compact">
+            <label>Moeda<select id="rateCurrency"><option>USD</option><option>EUR</option><option>GBP</option><option>CAD</option><option>JPY</option><option>CNY</option></select></label>
+            <label>Data<input id="rateDate" type="date" /></label>
+            <label>Valor da taxa<input id="rateValue" type="number" min="0" step="0.0001" /></label>
+          </div>
+          <div class="panel">
+            <div class="panel-head">
+              <h3>Importar tabela Vanguard</h3>
+              <span id="fxImportStatus">Aguardando arquivo</span>
+            </div>
+            <div class="import-zone compact-import">
+              <input type="file" id="fxTableInput" accept=".pdf,.xlsx,.xls,.csv" />
+              <div>
+                <strong>Importe o PDF ou planilha da tabela diária</strong>
+                <p>O sistema lê PTAX, Abertura, Vanguard, IOF, Intermediária e Negociadas para atualizar a aba Câmbio.</p>
+              </div>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel-head">
+              <h3>Taxas comerciais do dia</h3>
+              <span>Vanguard, IOF e negociadas</span>
+            </div>
+            <div class="table-wrap">
+              <table class="fx-matrix">
+                <thead id="fxMatrixHead"></thead>
+                <tbody id="fxMatrixBody"></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel-head">
+              <h3>Histórico de cotações</h3>
+              <button class="text-button" id="simulateBacen">Atualizar via Bacen</button>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Moeda</th><th>Data</th><th>Taxa</th><th>Origem</th></tr></thead>
+                <tbody id="rateHistory"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section class="view" id="bank">
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">Rodapé das invoices</p>
+              <h2>Dados bancários Vanguard</h2>
+            </div>
+            <button class="primary-button" id="saveBankData">Salvar dados</button>
+          </div>
+          <div class="form-grid">
+            <label>Banco<input id="bankName" placeholder="Banco" /></label>
+            <label>Agência<input id="bankAgency" placeholder="0001" /></label>
+            <label>Conta<input id="bankAccount" placeholder="12345-6" /></label>
+            <label>Beneficiário<input id="bankBeneficiary" placeholder="Vanguard Logistics" /></label>
+            <label>CNPJ<input id="bankTaxId" placeholder="00.000.000/0000-00" /></label>
+            <label>Pix<input id="bankPix" placeholder="chave pix" /></label>
+          </div>
+          <div class="panel">
+            <div class="panel-head">
+              <h3>Instruções de pagamento</h3>
+            </div>
+            <textarea id="bankInstructions" rows="5" placeholder="Instruções adicionais para pagamento"></textarea>
+          </div>
+        </section>
+
+        <section class="view" id="email">
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">Envio real de invoices</p>
+              <h2>Configuração de e-mail</h2>
+            </div>
+            <button class="primary-button" id="saveEmailConfig">Salvar configuração</button>
+          </div>
+          <div class="form-grid">
+            <label>Empresa faturadora<input id="emailCompany" placeholder="Vanguard Logistics" /></label>
+            <label>E-mail remetente<input id="emailFrom" type="email" placeholder="seuemail@gmail.com" /></label>
+            <label>Usuário SMTP<input id="smtpUser" placeholder="geralmente o mesmo e-mail" /></label>
+            <label>Senha / senha de app<input id="smtpPass" type="password" placeholder="senha de app" /></label>
+            <label>Servidor SMTP<input id="smtpHost" placeholder="smtp.gmail.com" /></label>
+            <label>Porta SMTP<input id="smtpPort" type="number" value="587" /></label>
+          </div>
+          <div class="panel">
+            <div class="panel-head">
+              <h3>Template do e-mail</h3>
+              <span>Use {{hbl}}, {{cliente}}, {{empresa}}, {{valor}}, {{vencimento}}</span>
+            </div>
+            <label class="select-label">Assunto<input id="emailSubject" /></label>
+            <label class="select-label">Corpo<textarea id="emailBody" rows="8"></textarea></label>
+          </div>
+        </section>
+
+        <section class="view" id="audit">
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">Segurança e LGPD</p>
+              <h2>Auditoria operacional</h2>
+            </div>
+            <span class="status-pill">Administrador</span>
+          </div>
+          <div class="audit-list" id="auditList"></div>
+        </section>
+      </section>
+    </main>
+
+    <div class="modal-backdrop" id="invoiceModal" hidden>
+      <section class="modal" role="dialog" aria-modal="true" aria-labelledby="invoiceModalTitle">
+        <div class="modal-bar">
+          <div>
+            <p class="eyebrow">Prévia da invoice</p>
+            <h2 id="invoiceModalTitle">Invoice</h2>
+          </div>
+          <div class="modal-actions">
+            <button class="primary-button" id="downloadInvoicePdf">Baixar PDF</button>
+            <button class="text-button" id="printInvoice">Imprimir</button>
+            <button class="icon-button" id="closeInvoiceModal" title="Fechar" aria-label="Fechar">×</button>
+          </div>
+        </div>
+        <div class="invoice-document" id="invoiceDocument"></div>
+      </section>
+    </div>
+
+    <div class="modal-backdrop" id="billingModal" hidden>
+      <section class="modal billing-modal" role="dialog" aria-modal="true" aria-labelledby="billingModalTitle">
+        <div class="modal-bar">
+          <div>
+            <p class="eyebrow">Acompanhamento</p>
+            <h2 id="billingModalTitle">Faturamento</h2>
+          </div>
+          <button class="icon-button" id="closeBillingModal" title="Fechar" aria-label="Fechar">×</button>
+        </div>
+        <div class="billing-steps" id="billingSteps"></div>
+      </section>
+    </div>
+
+    <div class="modal-backdrop" id="loginModal">
+      <section class="modal auth-modal" role="dialog" aria-modal="true" aria-labelledby="loginTitle">
+        <div class="modal-bar">
+          <div>
+            <p class="eyebrow">Acesso SaaS</p>
+            <h2 id="loginTitle">Entrar no Vanguard Invoice Hub</h2>
+          </div>
+        </div>
+        <form class="auth-form" id="loginForm">
+          <label>E-mail<input id="loginEmail" type="email" value="admin@vanguard.local" autocomplete="username" required /></label>
+          <label>Senha<input id="loginPassword" type="password" value="admin123" autocomplete="current-password" required /></label>
+          <button class="primary-button" type="submit">Entrar</button>
+          <p class="login-error" id="loginError"></p>
+          <p class="muted">Os dados serão carregados e salvos no backend FastAPI/PostgreSQL da empresa.</p>
+        </form>
+      </section>
+    </div>
+  </body>
+</html>
