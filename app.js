@@ -666,7 +666,7 @@ function formatOriginal(service) {
 }
 
 function formatFx(service) {
-  return service.currency === "BRL" ? "" : `${numberFmt.format(service.fxRate)}${service.fxProfile ? ` ${service.fxProfile}` : ""}`;
+  return service.currency === "BRL" ? "" : `${numberFmt.format(service.fxRate)}${service.fxProfile && service.fxProfile !== "Abertura" ? ` ${service.fxProfile}` : ""}`;
 }
 
 function bankDetailsHtml(bank = state.bank) {
@@ -1083,7 +1083,7 @@ function consolidateInvoices() {
     dueDate.setDate(dueDate.getDate() + dueDays);
 
     const services = unique.map((row) => {
-      const fxProfile = special ? (special.fxProfile || "Vanguard") : "PTAX";
+      const fxProfile = special ? (special.fxProfile || "Vanguard") : "Abertura";
       const rate = getCommercialRate(row.currency, row.issue_date, fxProfile);
       const isBrl = String(row.currency || "").toUpperCase() === "BRL";
       const negotiatedFee = special && !isBrl ? Number(special.fee || 0) / 100 : 0;
@@ -1112,7 +1112,7 @@ function consolidateInvoices() {
       total: services.reduce((sum, service) => sum + service.brlValue, 0),
       category: "Faturamento COMEX",
       costCenter: "Operação COMEX",
-      observations: special ? `CLIENTE ESPECIAL: prazo ${dueDays} dias, câmbio ${special.fxProfile || "Vanguard"} e taxa negociada ${numberFmt.format(Number(special.fee || 0))}% aplicados.` : "CLIENTE PADRÃO: PTAX do dia aplicada e prazo padrão de 7 dias.",
+      observations: special ? `CLIENTE ESPECIAL: prazo ${dueDays} dias, câmbio ${special.fxProfile || "Vanguard"} e taxa negociada ${numberFmt.format(Number(special.fee || 0))}% aplicados.` : "CLIENTE PADRÃO: taxa de abertura do dia aplicada e prazo padrão de 7 dias.",
       bank: state.bank
     };
   });
@@ -1514,6 +1514,119 @@ function renderFxMatrix() {
       `).join("")}
     </tr>
   `).join("");
+}
+
+// ── Recalcula linhas derivadas da tabela com base na taxa Vanguard ──
+function recalcFxDerivedRows(date) {
+  const table = state.fxTables[date];
+  if (!table) return;
+  const vanguard = table["Vanguard"];
+  if (!vanguard) return;
+
+  const IOF_RATE = 0.0338; // IOF padrão COMEX
+
+  fxCurrencies.forEach((currency) => {
+    const base = vanguard[currency];
+    if (!base) return;
+
+    // Calcula cada perfil derivado
+    const derived = {
+      "Vanguard + IOF":        base * (1 + IOF_RATE),
+      "Intermediária":         base * (1 - 0.04 / (1 + 0.04)),
+      "Intermediária + IOF":   base * (1 - 0.04 / (1 + 0.04)) * (1 + IOF_RATE),
+      "Negociada 3%":          base * (1 - 0.03 / (1 + 0.03)),
+      "Negociada 3% + IOF":    base * (1 - 0.03 / (1 + 0.03)) * (1 + IOF_RATE),
+      "Negociada 2%":          base * (1 - 0.02 / (1 + 0.02)),
+      "Negociada 2% + IOF":    base * (1 - 0.02 / (1 + 0.02)) * (1 + IOF_RATE),
+      "Negociada 1%":          base * (1 - 0.01 / (1 + 0.01)),
+      "Negociada 1% + IOF":    base * (1 - 0.01 / (1 + 0.01)) * (1 + IOF_RATE),
+    };
+
+    Object.entries(derived).forEach(([profile, value]) => {
+      if (!table[profile]) table[profile] = {};
+      table[profile][currency] = Math.round(value * 10000) / 10000;
+    });
+  });
+}
+
+// ── Busca PTAX e Abertura do Banco Central para a tabela de câmbio ──
+async function fetchBacenFxTable() {
+  const date = document.getElementById("rateDate").value || todayIso();
+  const btn = document.getElementById("btnFetchBacen");
+  if (btn) { btn.disabled = true; btn.textContent = "Buscando..."; }
+
+  // Mapeamento entre siglas do sistema e siglas do Bacen
+  const bacenCurrencyMap = {
+    "USD": "USD",
+    "EUR": "EUR",
+    "GBP": "GBP",
+    "CAD": "CAD",
+    "JPY": "JPY"
+  };
+
+  let successCount = 0;
+  let ptaxResults = {};
+  let aberturaResults = {};
+
+  for (const [localCurrency, bacenCurrency] of Object.entries(bacenCurrencyMap)) {
+    // Tenta buscar do Bacen, volta até 8 dias úteis para trás se não encontrar
+    for (let offset = 0; offset < 8; offset++) {
+      const lookup = new Date(`${date}T00:00:00Z`);
+      lookup.setUTCDate(lookup.getUTCDate() - offset);
+      const lookupDate = lookup.toISOString().slice(0, 10);
+      const [year, month, day] = lookupDate.split("-");
+      const bacenDate = `${month}-${day}-${year}`;
+      const url = `https://olinda.bcb.gov.br/olinda/servico/PTAX/versao/v1/odata/CotacaoMoedaPeriodo(moeda=@moeda,dataInicial=@dataInicial,dataFinalCotacao=@dataFinalCotacao)?@moeda='${bacenCurrency}'&@dataInicial='${bacenDate}'&@dataFinalCotacao='${bacenDate}'&$top=100&$orderby=dataHoraCotacao%20asc&$format=json&$select=cotacaoCompra,cotacaoVenda,dataHoraCotacao,tipoBoletim`;
+      try {
+        const response = await fetch(url, { cache: "no-store" });
+        if (!response.ok) continue;
+        const data = await response.json();
+        const values = data.value || [];
+        if (!values.length) continue;
+
+        // Abertura = primeiro boletim do dia
+        const abertura = values.find(v => v.tipoBoletim === "Abertura") || values[0];
+        // PTAX = fechamento (último boletim)
+        const fechamento = values.find(v => v.tipoBoletim === "Fechamento") || values[values.length - 1];
+
+        ptaxResults[localCurrency] = Number(fechamento.cotacaoVenda || fechamento.cotacaoCompra);
+        aberturaResults[localCurrency] = Number(abertura.cotacaoVenda || abertura.cotacaoCompra);
+        successCount++;
+        break;
+      } catch (e) {
+        break;
+      }
+    }
+  }
+
+  if (successCount > 0) {
+    // Garante que a tabela do dia existe
+    if (!state.fxTables[date]) state.fxTables[date] = JSON.parse(JSON.stringify(sampleFxTable));
+
+    // Preenche PTAX e Abertura mantendo os demais valores
+    fxCurrencies.forEach(currency => {
+      if (ptaxResults[currency] !== undefined) {
+        if (!state.fxTables[date]["PTAX"]) state.fxTables[date]["PTAX"] = {};
+        state.fxTables[date]["PTAX"][currency] = ptaxResults[currency];
+      }
+      if (aberturaResults[currency] !== undefined) {
+        if (!state.fxTables[date]["Abertura"]) state.fxTables[date]["Abertura"] = {};
+        state.fxTables[date]["Abertura"][currency] = aberturaResults[currency];
+      }
+    });
+
+    // Recalcula todas as linhas derivadas com base na Vanguard atual
+    recalcFxDerivedRows(date);
+    renderFxMatrix();
+    save();
+    addLog("success", `PTAX e Abertura atualizados do Bacen`, `${successCount} moedas atualizadas para ${date}. Linhas calculadas (IOF, Intermediária, Negociadas) recalculadas automaticamente.`);
+    showSyncStatus("PTAX atualizado do Banco Central");
+  } else {
+    addLog("warning", "Bacen indisponível", "Não foi possível buscar as taxas. Verifique a conexão ou preencha manualmente.");
+    showSyncStatus("Erro ao buscar PTAX do Bacen", true);
+  }
+
+  if (btn) { btn.disabled = false; btn.textContent = "🔄 Buscar PTAX do Bacen"; }
 }
 
 function normalizeFxText(text) {
@@ -2125,6 +2238,10 @@ document.getElementById("addRate").addEventListener("click", () => {
   askUpdateInvoicesFromDailyTable("Taxa PTAX/manual alterada na aba Câmbio.");
 });
 
+document.getElementById("btnFetchBacen").addEventListener("click", () => {
+  fetchBacenFxTable();
+});
+
 document.getElementById("rateDate").addEventListener("change", () => {
   const date = document.getElementById("rateDate").value || sampleFxTableDate;
   if (!state.fxTables[date]) state.fxTables[date] = JSON.parse(JSON.stringify(state.fxTables[sampleFxTableDate] || sampleFxTable));
@@ -2140,6 +2257,11 @@ document.getElementById("fxMatrixBody").addEventListener("change", (event) => {
   if (!state.fxTables[date][profile]) state.fxTables[date][profile] = {};
   state.fxTables[date][profile][currency] = parseLocaleNumber(event.target.value);
   addLog("success", "Tabela de câmbio atualizada", `${profile} ${currency}: ${numberFmt.format(state.fxTables[date][profile][currency])}`);
+  // Se editou a Vanguard, recalcula todas as linhas derivadas automaticamente
+  if (profile === "Vanguard") {
+    recalcFxDerivedRows(date);
+    renderFxMatrix();
+  }
   askUpdateInvoicesFromDailyTable("Tabela de câmbio alterada manualmente.");
 });
 

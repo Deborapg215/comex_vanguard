@@ -373,7 +373,10 @@
           <div class="panel">
             <div class="panel-head">
               <h3>Taxas comerciais do dia</h3>
-              <span>Vanguard, IOF e negociadas</span>
+              <div style="display:flex;gap:10px;align-items:center;">
+                <span style="color:var(--muted);font-size:0.82rem">Vanguard, IOF e negociadas</span>
+                <button class="primary-button" id="btnFetchBacen" style="font-size:0.82rem;min-height:34px;padding:0 12px;">🔄 Buscar PTAX do Bacen</button>
+              </div>
             </div>
             <div class="table-wrap">
               <table class="fx-matrix">
