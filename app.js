@@ -2238,7 +2238,8 @@ document.getElementById("addRate").addEventListener("click", () => {
   askUpdateInvoicesFromDailyTable("Taxa PTAX/manual alterada na aba Câmbio.");
 });
 
-document.getElementById("btnFetchBacen").addEventListener("click", () => {
+const btnFetchBacen = document.getElementById("btnFetchBacen");
+if (btnFetchBacen) btnFetchBacen.addEventListener("click", () => {
   fetchBacenFxTable();
 });
 
@@ -2732,30 +2733,92 @@ function loadLogoDataUrl() {
 
 async function buildInvoicePdf(invoice) {
   const { jsPDF } = window.jspdf;
-  const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
+  const doc = new jsPDF({ orientation: "portrait", unit: "pt", format: "a4" });
   if (!doc.autoTable) return null;
-  const margin = 36;
-  let y = 36;
 
+  const margin = 40;
+  const pageWidth = doc.internal.pageSize.getWidth(); // 595pt (A4 retrato)
+  const contentWidth = pageWidth - margin * 2;
+  let y = 40;
+
+  // ── Cabeçalho: logo à esquerda, total à direita ──────────────
   const logoDataUrl = await loadLogoDataUrl();
+  const headerTopY = y;
   if (logoDataUrl) {
-    doc.addImage(logoDataUrl, "PNG", margin, y, 170, 46);
-    y += 62;
+    // Logo redimensionado proporcionalmente para caber em retrato
+    const logoW = 130;
+    const logoH = 36;
+    doc.addImage(logoDataUrl, "PNG", margin, y, logoW, logoH);
   }
+
+  // Total BRL — canto superior direito
   doc.setFont("helvetica", "bold");
+  doc.setFontSize(8);
+  doc.setTextColor(100, 100, 100);
+  doc.text("TOTAL BRL", pageWidth - margin, headerTopY + 10, { align: "right" });
+  doc.setFontSize(14);
   doc.setTextColor(220, 55, 48);
-  doc.setFontSize(18);
+  doc.text(brl.format(invoice.total), pageWidth - margin, headerTopY + 28, { align: "right" });
+
+  y = headerTopY + 52;
+
+  // Linha separadora
+  doc.setDrawColor(220, 55, 48);
+  doc.setLineWidth(2);
+  doc.line(margin, y, pageWidth - margin, y);
+  y += 14;
+
+  // COMMERCIAL INVOICE label
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(7);
+  doc.setTextColor(150, 150, 150);
+  doc.text("COMMERCIAL INVOICE", margin, y);
+  y += 14;
+
+  // Número da invoice
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(16);
+  doc.setTextColor(30, 30, 30);
   doc.text(`Invoice ${invoice.hbl}`, margin, y);
-  doc.setTextColor(0, 0, 0);
-  doc.setFontSize(11);
-  doc.setFont("helvetica", "normal");
   y += 22;
-  doc.text(`Cliente: ${invoice.client}`, margin, y);
-  doc.text(`CNPJ: ${invoice.cnpj}`, 360, y);
-  y += 16;
-  doc.text(`Emissão: ${formatDate(invoice.issueDate)} · Vencimento: ${formatDate(invoice.dueDate)}`, margin, y);
-  doc.text(`Total BRL: ${brl.format(invoice.total)}`, 360, y);
-  y += 24;
+
+  // ── Grid de informações do cliente ───────────────────────────
+  const infoBoxH = 28;
+  const col = contentWidth / 3;
+
+  const infoBoxes = [
+    { label: "CLIENTE", value: invoice.client },
+    { label: "CNPJ", value: invoice.cnpj },
+    { label: "HBL", value: invoice.hbl },
+    { label: "EMISSÃO", value: formatDate(invoice.issueDate) },
+    { label: "VENCIMENTO", value: formatDate(invoice.dueDate) },
+    { label: "STATUS", value: (invoice.status || "pendente").toUpperCase() }
+  ];
+
+  doc.setDrawColor(220, 225, 230);
+  doc.setLineWidth(0.5);
+  infoBoxes.forEach((box, i) => {
+    const bx = margin + (i % 3) * col;
+    const by = y + Math.floor(i / 3) * (infoBoxH + 4);
+    doc.setFillColor(244, 247, 248);
+    doc.roundedRect(bx, by, col - 4, infoBoxH, 3, 3, "FD");
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(6.5);
+    doc.setTextColor(100, 110, 120);
+    doc.text(box.label, bx + 6, by + 10);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(8.5);
+    doc.setTextColor(30, 30, 30);
+    doc.text(doc.splitTextToSize(box.value || "-", col - 12), bx + 6, by + 20);
+  });
+  y += 2 * (infoBoxH + 4) + 14;
+
+  // ── Tabela de serviços ────────────────────────────────────────
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(9);
+  doc.setTextColor(30, 30, 30);
+  doc.text("Serviços e conversão cambial", margin, y);
+  y += 8;
 
   doc.autoTable({
     startY: y,
@@ -2769,38 +2832,68 @@ async function buildInvoicePdf(invoice) {
       brl.format(service.brlValue)
     ]),
     styles: { font: "helvetica", fontSize: 8, cellPadding: 4, overflow: "linebreak" },
-    headStyles: { fillColor: [220, 55, 48], textColor: 255 },
+    headStyles: { fillColor: [220, 55, 48], textColor: 255, fontStyle: "bold", fontSize: 7.5 },
+    alternateRowStyles: { fillColor: [248, 250, 251] },
     columnStyles: {
-      0: { cellWidth: 260 },
-      1: { cellWidth: 90 },
-      2: { cellWidth: 110 },
-      3: { cellWidth: 110 },
-      4: { cellWidth: 110 }
+      0: { cellWidth: "auto" },
+      1: { cellWidth: 55, halign: "center" },
+      2: { cellWidth: 80, halign: "right" },
+      3: { cellWidth: 80, halign: "right" },
+      4: { cellWidth: 80, halign: "right" }
     }
   });
 
-  const itemDescriptions = [...new Set(invoice.services.map((service) => service.item_description).filter(Boolean))].join(" | ") || "Não informado na query.";
-  let footerY = doc.lastAutoTable.finalY + 20;
+  let footerY = doc.lastAutoTable.finalY + 12;
+  const textWidth = contentWidth;
+
+  // Total convertido
+  doc.setFillColor(244, 247, 248);
+  doc.roundedRect(margin, footerY, contentWidth, 22, 3, 3, "F");
   doc.setFont("helvetica", "bold");
-  doc.text(`Total convertido: ${brl.format(invoice.total)}`, margin, footerY);
-  doc.setFont("helvetica", "normal");
-  footerY += 20;
+  doc.setFontSize(9);
+  doc.setTextColor(30, 30, 30);
+  doc.text("TOTAL CONVERTIDO", margin + 8, footerY + 14);
+  doc.setTextColor(220, 55, 48);
+  doc.setFontSize(11);
+  doc.text(brl.format(invoice.total), pageWidth - margin - 4, footerY + 14, { align: "right" });
+  footerY += 32;
+
+  // Descrição dos itens
+  const itemDescriptions = [...new Set(invoice.services.map((s) => s.item_description).filter(Boolean))].join(" | ") || "Não informado na query.";
   doc.setFont("helvetica", "bold");
+  doc.setFontSize(8.5);
+  doc.setTextColor(30, 30, 30);
   doc.text("Descrição dos itens embarcados", margin, footerY);
+  footerY += 12;
   doc.setFont("helvetica", "normal");
-  footerY += 14;
-  const itemLines = doc.splitTextToSize(itemDescriptions, 760);
+  doc.setFontSize(8);
+  doc.setTextColor(60, 60, 60);
+  const itemLines = doc.splitTextToSize(itemDescriptions, textWidth);
   doc.text(itemLines, margin, footerY);
-  footerY += itemLines.length * 12 + 16;
+  footerY += itemLines.length * 11 + 14;
+
+  // Dados bancários
   doc.setFont("helvetica", "bold");
+  doc.setFontSize(8.5);
+  doc.setTextColor(30, 30, 30);
   doc.text("Dados bancários para pagamento", margin, footerY);
+  footerY += 12;
   doc.setFont("helvetica", "normal");
-  footerY += 14;
+  doc.setFontSize(8);
+  doc.setTextColor(60, 60, 60);
   bankDetailsText(invoice.bank || state.bank).forEach((line) => {
-    doc.text(doc.splitTextToSize(line, 760), margin, footerY);
-    footerY += 13;
+    const lines = doc.splitTextToSize(line, textWidth);
+    doc.text(lines, margin, footerY);
+    footerY += lines.length * 11;
   });
-  doc.text(invoice.observations, margin, footerY + 6);
+
+  // Observações
+  footerY += 8;
+  doc.setTextColor(100, 100, 100);
+  doc.setFontSize(7.5);
+  const obsLines = doc.splitTextToSize(invoice.observations || "", textWidth);
+  doc.text(obsLines, margin, footerY);
+
   return doc;
 }
 
