@@ -1108,6 +1108,7 @@ function consolidateInvoices() {
       sentAt: previousInvoice.sentAt || "",
       clientEmail: previousInvoice.clientEmail || rowEmail,
       billedBy: previousInvoice.billedBy || "",
+      nfse: previousInvoice.nfse || [],
       services,
       total: services.reduce((sum, service) => sum + service.brlValue, 0),
       category: "Faturamento COMEX",
@@ -1455,11 +1456,18 @@ function renderInvoices() {
           <span class="chip">Emissão: ${invoice.issueDate}</span>
           <span class="chip">Vencimento: ${invoice.dueDate}</span>
           <span class="chip">${invoice.observations}</span>
+          ${invoice.nfse && invoice.nfse.length > 0 ? invoice.nfse.map(n => `
+            <span class="chip ${n.numero ? 'ok' : n.status === 'erro' ? 'bad' : 'warn'}" title="Ref: ${n.ref}">
+              📄 NFS-e ${n.numero ? "#" + n.numero : n.status === "autorizado" ? "✓" : n.status === "erro" ? "✗ Erro" : "⏳ Aguardando"}
+            </span>
+          `).join("") : ""}
         </div>
         <div class="invoice-actions">
           <button class="primary-button" data-preview="${invoice.hbl}">Visualizar PDF</button>
           <button class="text-button" data-pdf="${invoice.hbl}">Baixar PDF</button>
           <button class="primary-button" data-send="${invoice.hbl}">${invoice.status === "enviado" ? "Reenviar" : "Enviar"}</button>
+          <button class="text-button" data-nfse="${invoice.hbl}" style="color:var(--ok);border:1px solid var(--ok);border-radius:7px;padding:0 10px;min-height:34px;">${invoice.nfse && invoice.nfse.length > 0 ? "📄 NFS-e (" + invoice.nfse.length + ")" : "📄 Emitir NFS-e"}</button>
+          ${invoice.nfse && invoice.nfse.some(n => !n.numero && n.status !== "erro") ? `<button class="text-button" data-consultar-nfse="${invoice.hbl}" style="color:var(--accent-3);">🔄 Consultar status</button>` : ""}
           <button class="text-button" data-error="${invoice.hbl}">Marcar erro</button>
         </div>
       </article>
@@ -2498,13 +2506,36 @@ document.getElementById("invoiceList").addEventListener("click", (event) => {
   const errorHbl = event.target.dataset.error;
   const previewHbl = event.target.dataset.preview;
   const pdfHbl = event.target.dataset.pdf;
-  if (!sendHbl && !errorHbl && !previewHbl && !pdfHbl) return;
+  const nfseHbl = event.target.dataset.nfse;
+  if (!sendHbl && !errorHbl && !previewHbl && !pdfHbl && !nfseHbl) return;
   if (previewHbl) {
     openInvoicePreview(previewHbl);
     return;
   }
   if (pdfHbl) {
     downloadInvoicePdf(pdfHbl);
+    return;
+  }
+  if (nfseHbl) {
+    const invoice = state.invoices.find(i => i.hbl === nfseHbl);
+    if (!invoice) return;
+    // Se já tem NFS-e emitida, abre o modal de status; senão abre o de emissão
+    if (invoice.nfse && invoice.nfse.length > 0) {
+      renderNfseStatusModal(invoice);
+    } else {
+      renderNfseModal(invoice);
+    }
+    return;
+  }
+
+  const consultarNfseHbl = event.target.dataset.consultarNfse;
+  if (consultarNfseHbl) {
+    event.target.textContent = "🔄 Consultando...";
+    event.target.disabled = true;
+    consultarStatusNfse(consultarNfseHbl).finally(() => {
+      event.target.textContent = "🔄 Consultar status";
+      event.target.disabled = false;
+    });
     return;
   }
   if (sendHbl) {
@@ -2897,6 +2928,437 @@ async function buildInvoicePdf(invoice) {
   return doc;
 }
 
+
+// ── Módulo NFS-e — Focus NFe ─────────────────────────────────
+const FOCUS_NFE_TOKEN = "pBRwQocstuaDX4Zg0ZLaOZdqVnMg45wF";
+const FOCUS_NFE_URL = "https://homologacao.focusnfe.com.br/v2";
+// Proxy Supabase Edge Function (resolve CORS)
+const FOCUS_NFE_PROXY = "https://xqyxhfwzqgogruufixbr.supabase.co/functions/v1/rapid-responder";
+
+const NFSE_PRESTADOR = {
+  cnpj: "03273941000278",
+  inscricao_municipal: "1361971",
+  codigo_municipio: "3548500" // Santos - SP (IBGE)
+};
+
+const NFSE_SERVICOS = {
+  "Serviço de Importação": {
+    item_lista_servico: "10.06",
+    codigo_tributario_municipio: "000001",
+    descricao_base: "VALOR REFERENTE A TAXAS LOCAIS DE IMPORTACAO MARITIMA BL"
+  },
+  "Serviço de Exportação": {
+    item_lista_servico: "10.06",
+    codigo_tributario_municipio: "000001",
+    descricao_base: "VALOR REFERENTE A TAXAS LOCAIS DE EXPORTACAO MARITIMA BL"
+  },
+  "Serviço Aéreo": {
+    item_lista_servico: "10.06",
+    codigo_tributario_municipio: "000001",
+    descricao_base: "VALOR REFERENTE A TAXAS LOCAIS DE IMPORTACAO AEREA BL"
+  }
+};
+
+function nfseAuthHeader() {
+  return "Basic " + btoa(FOCUS_NFE_TOKEN + ":");
+}
+
+async function focusProxyFetch(path, options = {}) {
+  const url = FOCUS_NFE_URL + path;
+  const response = await fetch(FOCUS_NFE_PROXY, {
+    method: options.method || "GET",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": "Bearer " + authToken,
+      "X-Focus-Token": FOCUS_NFE_TOKEN,
+      "X-Focus-Url": url
+    },
+    body: options.body || undefined
+  });
+  const text = await response.text();
+  try { return { ok: response.ok, status: response.status, data: JSON.parse(text) }; }
+  catch { return { ok: response.ok, status: response.status, data: { mensagem: text } }; }
+}
+
+async function emitirNfse(invoice, tipoServico, valorServico, hblRef, servicosSelecionados) {
+  const servico = NFSE_SERVICOS[tipoServico] || NFSE_SERVICOS["Serviço de Importação"];
+  const ref = "VANG-" + invoice.hbl.replace(/[^a-zA-Z0-9]/g, "").slice(0, 20) + "-" + Date.now();
+
+  const valorPis    = Math.round(valorServico * 0.0065 * 100) / 100;
+  const valorCofins = Math.round(valorServico * 0.03   * 100) / 100;
+  const valorIss    = Math.round(valorServico * 0.03   * 100) / 100;
+  const cnpjTomador = (invoice.cnpj || "").replace(/[^0-9]/g, "");
+
+  // Discriminação: lista os serviços selecionados
+  const listaServicos = (servicosSelecionados || [])
+    .map(s => s.service_description + " " + brl.format(s.brlValue))
+    .join(" | ");
+  const discriminacao = `${servico.descricao_base} ${hblRef || invoice.hbl}${listaServicos ? " | " + listaServicos : ""}`;
+
+  const payload = {
+    data_emissao: new Date().toISOString().slice(0, 19) + "-0300",
+    natureza_operacao: 1,
+    optante_simples_nacional: false,
+    // Vanguard é Lucro Presumido — regime_especial_tributacao não se aplica
+    consumidor_final: 0,
+    indicador_destinatario: 0,
+    percentual_total_tributos_simples_nacional: 0.0,
+    prestador: {
+      cnpj: NFSE_PRESTADOR.cnpj,
+      inscricao_municipal: NFSE_PRESTADOR.inscricao_municipal,
+      codigo_municipio: 3548500
+    },
+    tomador: {
+      cnpj: cnpjTomador || undefined,
+      razao_social: invoice.client.slice(0, 115),
+      email: invoice.clientEmail ? invoice.clientEmail.slice(0, 80) : undefined
+    },
+    servico: {
+      discriminacao: discriminacao.slice(0, 2000),
+      valor_servicos: valorServico,
+      aliquota: 3.0,
+      item_lista_servico: servico.item_lista_servico,
+      codigo_tributario_municipio: servico.codigo_tributario_municipio,
+      codigo_nbs: "118029000",
+      codigo_indicador_operacao: "050101",
+      ibs_cbs_situacao_tributaria: "000",
+      ibs_cbs_classificacao_tributaria: "000001",
+      codigo_municipio_incidencia: 3548500,
+      iss_retido: true
+    }
+  };
+
+  const result = await focusProxyFetch(`/nfse?ref=${encodeURIComponent(ref)}`, {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+
+  if (!result.ok) throw new Error(result.data.mensagem || JSON.stringify(result.data));
+  return { ref, ...result.data };
+}
+
+async function consultarNfse(ref) {
+  const result = await focusProxyFetch(`/nfse/${encodeURIComponent(ref)}`);
+  return result.data;
+}
+
+async function cancelarNfse(ref, justificativa) {
+  const result = await focusProxyFetch(`/nfse/${encodeURIComponent(ref)}`, {
+    method: "DELETE",
+    body: JSON.stringify({ justificativa })
+  });
+  return result.data;
+}
+
+function renderNfseModal(invoice) {
+  const existing = document.getElementById("nfseModal");
+  if (existing) existing.remove();
+
+  // Serviços da invoice — todos marcados por padrão exceto fretes
+  const EXCLUIR_PADRAO = ["freight", "frete", "ocean freight", "air freight"];
+  const servicos = (invoice.services || []).map(s => ({
+    ...s,
+    selecionado: !EXCLUIR_PADRAO.some(k => (s.service_description || "").toLowerCase().includes(k))
+  }));
+
+  function calcularTotal() {
+    return servicos.filter(s => s.selecionado).reduce((sum, s) => sum + (s.brlValue || 0), 0);
+  }
+
+  const modal = document.createElement("div");
+  modal.id = "nfseModal";
+  modal.className = "modal-backdrop";
+
+  function renderServicosHtml() {
+    return servicos.map((s, i) => `
+      <tr style="background:${s.selecionado ? "#fff" : "#f9f9f9"}">
+        <td style="padding:8px;border-bottom:1px solid var(--line);">
+          <input type="checkbox" data-svc-idx="${i}" ${s.selecionado ? "checked" : ""} />
+        </td>
+        <td style="padding:8px;border-bottom:1px solid var(--line);font-size:0.85rem;">${escapeHtml(s.service_description || "-")}</td>
+        <td style="padding:8px;border-bottom:1px solid var(--line);font-size:0.85rem;text-align:right;">${brl.format(s.brlValue || 0)}</td>
+      </tr>
+    `).join("");
+  }
+
+  modal.innerHTML = `
+    <div class="modal billing-modal" style="max-width:680px;">
+      <div class="modal-bar">
+        <div>
+          <p class="eyebrow">Emissão Fiscal</p>
+          <h2>Emitir NFS-e</h2>
+        </div>
+        <button class="icon-button" id="closeNfseModal">✕</button>
+      </div>
+
+      <div style="background:#fff;border:1px solid var(--line);border-radius:8px;padding:12px 16px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;">
+        <div>
+          <p class="eyebrow" style="margin-bottom:2px;">Tomador</p>
+          <strong>${escapeHtml(invoice.client)}</strong>
+          <span style="color:var(--muted);font-size:0.82rem;margin-left:8px;">CNPJ: ${escapeHtml(invoice.cnpj)}</span>
+        </div>
+        <div style="text-align:right;">
+          <p class="eyebrow" style="margin-bottom:2px;">HBL</p>
+          <strong>${escapeHtml(invoice.hbl)}</strong>
+        </div>
+      </div>
+
+      <div class="form-grid" style="grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px;">
+        <label style="display:grid;gap:6px;font-size:0.82rem;font-weight:750;color:var(--muted);">
+          Tipo de serviço
+          <select id="nfseTipoServico" style="min-height:40px;border:1px solid var(--line);border-radius:7px;padding:8px 10px;">
+            <option>Serviço de Importação</option>
+            <option>Serviço de Exportação</option>
+            <option>Serviço Aéreo</option>
+          </select>
+        </label>
+        <label style="display:grid;gap:6px;font-size:0.82rem;font-weight:750;color:var(--muted);">
+          Competência
+          <input id="nfseCompetencia" type="month" value="${new Date().toISOString().slice(0,7)}" style="min-height:40px;border:1px solid var(--line);border-radius:7px;padding:8px 10px;" />
+        </label>
+      </div>
+
+      <div style="margin-bottom:14px;">
+        <p style="font-size:0.82rem;font-weight:750;color:var(--muted);margin-bottom:8px;">SERVIÇOS QUE COMPÕEM A NFS-e <span style="font-weight:400;">(desmarque os que não entram, ex: frete)</span></p>
+        <div style="border:1px solid var(--line);border-radius:8px;overflow:hidden;">
+          <table style="width:100%;border-collapse:collapse;">
+            <thead>
+              <tr style="background:#f4f7f8;">
+                <th style="padding:8px;width:40px;font-size:0.75rem;text-align:left;border-bottom:1px solid var(--line);">✓</th>
+                <th style="padding:8px;font-size:0.75rem;text-align:left;border-bottom:1px solid var(--line);">Serviço</th>
+                <th style="padding:8px;font-size:0.75rem;text-align:right;border-bottom:1px solid var(--line);">Valor BRL</th>
+              </tr>
+            </thead>
+            <tbody id="nfseServicosBody">${renderServicosHtml()}</tbody>
+            <tfoot>
+              <tr style="background:#f4f7f8;">
+                <td colspan="2" style="padding:10px 8px;font-size:0.85rem;font-weight:750;">Total selecionado</td>
+                <td id="nfseTotalSelecionado" style="padding:10px 8px;font-size:0.9rem;font-weight:900;text-align:right;color:var(--accent);">${brl.format(calcularTotal())}</td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      </div>
+
+      <div style="background:#f4f7f8;border-radius:7px;padding:10px 14px;margin-bottom:14px;font-size:0.82rem;color:var(--muted);">
+        <strong style="color:var(--ink);">Tributos sobre o valor selecionado:</strong>
+        ISS 3% • PIS 0,65% • COFINS 3% • ISS retido na fonte
+      </div>
+
+      <div id="nfseStatus" style="display:none;padding:10px 14px;border-radius:7px;margin-bottom:12px;font-size:0.85rem;"></div>
+
+      <div style="display:flex;gap:10px;justify-content:flex-end;">
+        <button class="text-button" id="closeNfseModal2">Cancelar</button>
+        <button class="primary-button" id="btnEmitirNfse">Emitir NFS-e</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+
+  const closeModal = () => modal.remove();
+  document.getElementById("closeNfseModal").addEventListener("click", closeModal);
+  document.getElementById("closeNfseModal2").addEventListener("click", closeModal);
+
+  // Atualizar seleção ao marcar/desmarcar
+  modal.querySelector("#nfseServicosBody").addEventListener("change", (e) => {
+    const idx = e.target.dataset.svcIdx;
+    if (idx === undefined) return;
+    servicos[parseInt(idx)].selecionado = e.target.checked;
+    const row = e.target.closest("tr");
+    if (row) row.style.background = e.target.checked ? "#fff" : "#f9f9f9";
+    document.getElementById("nfseTotalSelecionado").textContent = brl.format(calcularTotal());
+  });
+
+  document.getElementById("btnEmitirNfse").addEventListener("click", async () => {
+    const btn = document.getElementById("btnEmitirNfse");
+    const statusDiv = document.getElementById("nfseStatus");
+    const tipoServico = document.getElementById("nfseTipoServico").value;
+    const servicosSelecionados = servicos.filter(s => s.selecionado);
+    const valor = Math.round(calcularTotal() * 100) / 100;
+
+    if (!valor || valor <= 0) {
+      statusDiv.style.display = "block";
+      statusDiv.style.background = "#fde8e6";
+      statusDiv.style.color = "var(--bad)";
+      statusDiv.textContent = "Selecione ao menos um serviço com valor.";
+      return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = "Emitindo...";
+    statusDiv.style.display = "block";
+    statusDiv.style.background = "#f4f7f8";
+    statusDiv.style.color = "var(--muted)";
+    statusDiv.textContent = "Enviando para a prefeitura de Santos via Focus NFe...";
+
+    try {
+      const result = await emitirNfse(invoice, tipoServico, valor, invoice.hbl, servicosSelecionados);
+
+      const inv = state.invoices.find(i => i.hbl === invoice.hbl);
+      if (inv) {
+        if (!inv.nfse) inv.nfse = [];
+        inv.nfse.push({
+          ref: result.ref,
+          status: result.status,
+          tipo: tipoServico,
+          valor,
+          servicos: servicosSelecionados.map(s => s.service_description),
+          emitidaEm: new Date().toISOString()
+        });
+        save();
+      }
+
+      statusDiv.style.background = "#e4f4eb";
+      statusDiv.style.color = "var(--ok)";
+      statusDiv.innerHTML = `✅ NFS-e enviada para processamento!<br>
+        <span style="font-size:0.8rem;">Ref: <strong>${result.ref}</strong> · Status: ${result.status}</span><br>
+        <span style="font-size:0.8rem;color:var(--muted);">Valor: ${brl.format(valor)} · ${servicosSelecionados.length} serviços incluídos</span>`;
+      btn.textContent = "Emitido!";
+      addLog("success", `NFS-e emitida — ${invoice.hbl}`, `Ref: ${result.ref} | Valor: ${brl.format(valor)} | ${tipoServico} | ${servicosSelecionados.length} serviços`);
+      consolidateInvoices();
+      render();
+    } catch (e) {
+      statusDiv.style.background = "#fde8e6";
+      statusDiv.style.color = "var(--bad)";
+      statusDiv.textContent = "Erro: " + e.message;
+      btn.disabled = false;
+      btn.textContent = "Tentar novamente";
+      addLog("error", `Erro ao emitir NFS-e — ${invoice.hbl}`, e.message);
+    }
+  });
+}
+// ─────────────────────────────────────────────────────────────
+
+async function consultarStatusNfse(hbl) {
+  const invoice = state.invoices.find(i => i.hbl === hbl);
+  if (!invoice || !invoice.nfse || invoice.nfse.length === 0) return;
+
+  let atualizado = false;
+  for (const nfseItem of invoice.nfse) {
+    if (nfseItem.numero && nfseItem.status === "autorizado") continue;
+    try {
+      const data = await consultarNfse(nfseItem.ref);
+      const statusAnterior = nfseItem.status;
+      nfseItem.status = data.status || nfseItem.status;
+      if (data.numero) nfseItem.numero = data.numero;
+      if (data.numero_nfse) nfseItem.numero = data.numero_nfse;
+      if (data.link_pdf_nota_fiscal) nfseItem.pdfUrl = data.link_pdf_nota_fiscal;
+      if (data.link_pdf_nota_fiscal_completo) nfseItem.pdfUrl = data.link_pdf_nota_fiscal_completo;
+      if (nfseItem.status !== statusAnterior) atualizado = true;
+    } catch (e) {
+      console.warn("Erro ao consultar NFS-e:", e.message);
+    }
+  }
+
+  if (atualizado) {
+    save();
+    consolidateInvoices();
+    render();
+    showSyncStatus("Status NFS-e atualizado");
+  }
+  renderNfseStatusModal(invoice);
+}
+
+function renderNfseStatusModal(invoice) {
+  const existing = document.getElementById("nfseStatusModal");
+  if (existing) existing.remove();
+
+  const modal = document.createElement("div");
+  modal.id = "nfseStatusModal";
+  modal.className = "modal-backdrop";
+  modal.innerHTML = `
+    <div class="modal billing-modal" style="max-width:640px;">
+      <div class="modal-bar">
+        <div>
+          <p class="eyebrow">NFS-e emitidas</p>
+          <h2>${escapeHtml(invoice.hbl)}</h2>
+        </div>
+        <button class="icon-button" id="closeNfseStatusModal">✕</button>
+      </div>
+
+      ${(invoice.nfse || []).length === 0 ? `<p class="empty">Nenhuma NFS-e emitida para esta invoice.</p>` :
+        (invoice.nfse || []).map((n, i) => `
+          <div style="background:#fff;border:1px solid var(--line);border-radius:8px;padding:14px;margin-bottom:10px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+              <strong>NFS-e ${i + 1} — ${escapeHtml(n.tipo || "")}</strong>
+              <span class="chip ${n.status === 'autorizado' ? 'ok' : n.status === 'erro' ? 'bad' : 'warn'}">
+                ${n.status === "autorizado" ? "✅ Autorizada" : n.status === "erro" ? "❌ Erro" : n.status === "cancelado" ? "✕ Cancelada" : "⏳ Aguardando autorização"}
+              </span>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:0.82rem;color:var(--muted);margin-bottom:10px;">
+              <div><strong style="color:var(--ink);">Ref Focus NFe</strong><br>${escapeHtml(n.ref || "-")}</div>
+              <div><strong style="color:var(--ink);">Número NFS-e</strong><br>${n.numero ? "#" + n.numero : "Aguardando..."}</div>
+              <div><strong style="color:var(--ink);">Valor</strong><br>${n.valor ? brl.format(n.valor) : "-"}</div>
+              <div><strong style="color:var(--ink);">Emitida em</strong><br>${n.emitidaEm ? new Date(n.emitidaEm).toLocaleString("pt-BR") : "-"}</div>
+            </div>
+            <div style="display:flex;gap:8px;">
+              ${n.pdfUrl ? `<a href="${escapeHtml(n.pdfUrl)}" target="_blank" class="primary-button" style="text-decoration:none;display:inline-flex;align-items:center;gap:6px;font-size:0.82rem;min-height:34px;padding:0 12px;">📄 Ver PDF</a>` : ""}
+              <button class="text-button" data-consultar-ref="${escapeHtml(n.ref)}" data-consultar-hbl="${escapeHtml(invoice.hbl)}" style="color:var(--accent-3);">🔄 Atualizar status</button>
+              ${n.status === "autorizado" ? `<button class="text-button" data-cancelar-nfse-ref="${escapeHtml(n.ref)}" data-cancelar-nfse-hbl="${escapeHtml(invoice.hbl)}" data-cancelar-nfse-idx="${i}" style="color:var(--bad);">✕ Cancelar NFS-e</button>` : ""}
+            </div>
+          </div>
+        `).join("")
+      }
+
+      <div style="display:flex;justify-content:space-between;margin-top:8px;">
+        <button class="primary-button" id="btnNovaEmissao">+ Emitir nova NFS-e</button>
+        <button class="text-button" id="closeNfseStatusModal2">Fechar</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+
+  const closeModal = () => modal.remove();
+  document.getElementById("closeNfseStatusModal").addEventListener("click", closeModal);
+  document.getElementById("closeNfseStatusModal2").addEventListener("click", closeModal);
+  document.getElementById("btnNovaEmissao").addEventListener("click", () => {
+    closeModal();
+    renderNfseModal(invoice);
+  });
+
+  // Atualizar status individual
+  modal.addEventListener("click", async (e) => {
+    const ref = e.target.dataset.consultarRef;
+    const hbl = e.target.dataset.consultarHbl;
+    if (ref && hbl) {
+      e.target.textContent = "Consultando...";
+      e.target.disabled = true;
+      await consultarStatusNfse(hbl);
+      return;
+    }
+
+    // Cancelar NFS-e
+    const cancelRef = e.target.dataset.cancelarNfseRef;
+    const cancelHbl = e.target.dataset.cancelarNfseHbl;
+    const cancelIdx = e.target.dataset.cancelarNfseIdx;
+    if (cancelRef && cancelHbl) {
+      const justificativa = window.prompt("Informe a justificativa do cancelamento (mínimo 15 caracteres):");
+      if (!justificativa || justificativa.length < 15) {
+        alert("Justificativa muito curta. Mínimo 15 caracteres.");
+        return;
+      }
+      try {
+        e.target.textContent = "Cancelando...";
+        e.target.disabled = true;
+        await cancelarNfse(cancelRef, justificativa);
+        const inv = state.invoices.find(i => i.hbl === cancelHbl);
+        if (inv && inv.nfse && inv.nfse[cancelIdx]) {
+          inv.nfse[cancelIdx].status = "cancelado";
+        }
+        save();
+        consolidateInvoices();
+        render();
+        closeModal();
+        addLog("success", `NFS-e cancelada — ${cancelHbl}`, `Ref: ${cancelRef}`);
+      } catch (err) {
+        alert("Erro ao cancelar: " + err.message);
+        e.target.textContent = "✕ Cancelar NFS-e";
+        e.target.disabled = false;
+      }
+    }
+  });
+}
+
 async function downloadInvoicePdf(hbl = state.activeInvoiceHbl) {
   const invoice = state.invoices.find((item) => item.hbl === hbl);
   if (!invoice) return;
@@ -2951,6 +3413,158 @@ document.getElementById("loginForm").addEventListener("submit", async (event) =>
 document.getElementById("logoutButton").addEventListener("click", logout);
 
 document.getElementById("rateDate").value = todayIso();
+
+// Event listeners da aba NFS-e
+document.querySelector(".content").addEventListener("click", async (e) => {
+  // Atualizar status de NFS-e na lista
+  const consultarRef = e.target.dataset.nfseConsultarRef;
+  const consultarHbl = e.target.dataset.nfseConsultarHbl;
+  if (consultarRef && consultarHbl) {
+    e.target.textContent = "Consultando...";
+    e.target.disabled = true;
+    await consultarStatusNfse(consultarHbl);
+    renderNfseList();
+    e.target.disabled = false;
+    return;
+  }
+
+  // Cancelar NFS-e na lista
+  const cancelarRef = e.target.dataset.nfseCancelarRef;
+  const cancelarHbl = e.target.dataset.nfseCancelarHbl;
+  if (cancelarRef && cancelarHbl) {
+    const justificativa = window.prompt("Informe a justificativa do cancelamento (mínimo 15 caracteres):");
+    if (!justificativa || justificativa.length < 15) {
+      alert("Justificativa muito curta. Mínimo 15 caracteres.");
+      return;
+    }
+    try {
+      e.target.textContent = "Cancelando...";
+      e.target.disabled = true;
+      await cancelarNfse(cancelarRef, justificativa);
+      const inv = state.invoices.find(i => i.hbl === cancelarHbl);
+      if (inv && inv.nfse) {
+        const n = inv.nfse.find(n => n.ref === cancelarRef);
+        if (n) n.status = "cancelado";
+      }
+      save();
+      consolidateInvoices();
+      render();
+      renderNfseList();
+      addLog("success", `NFS-e cancelada — ${cancelarHbl}`, `Ref: ${cancelarRef}`);
+    } catch (err) {
+      alert("Erro ao cancelar: " + err.message);
+      e.target.textContent = "✕ Cancelar";
+      e.target.disabled = false;
+    }
+  }
+});
+
+// ── Aba NFS-e emitidas ───────────────────────────────────────
+(function injectNfseView() {
+  const sidebar = document.querySelector(".sidebar");
+  const contentEl = document.querySelector(".content");
+  if (!sidebar || !contentEl) return;
+
+  const navBtn = document.createElement("button");
+  navBtn.className = "nav-item";
+  navBtn.dataset.view = "nfse-list";
+  navBtn.textContent = "NFS-e";
+  sidebar.appendChild(navBtn);
+
+  const section = document.createElement("section");
+  section.className = "view";
+  section.id = "nfse-list";
+  section.innerHTML = `
+    <div class="section-head">
+      <div>
+        <p class="eyebrow">Emissão fiscal</p>
+        <h2>NFS-e emitidas</h2>
+      </div>
+      <span class="status-pill" id="nfseCount">0 notas</span>
+    </div>
+    <div class="panel">
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>HBL / Invoice</th>
+              <th>Cliente</th>
+              <th>Tipo</th>
+              <th>Valor</th>
+              <th>Nº NFS-e</th>
+              <th>Status</th>
+              <th>Emitida em</th>
+              <th>Ações</th>
+            </tr>
+          </thead>
+          <tbody id="nfseListBody">
+            <tr><td colspan="8" class="empty">Nenhuma NFS-e emitida ainda.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+  contentEl.appendChild(section);
+
+  navBtn.addEventListener("click", () => {
+    document.querySelectorAll(".nav-item, .view").forEach(el => el.classList.remove("active"));
+    navBtn.classList.add("active");
+    section.classList.add("active");
+    renderNfseList();
+  });
+})();
+
+function renderNfseList() {
+  // Coleta todas as NFS-e de todas as invoices
+  const todas = [];
+  (state.invoices || []).forEach(invoice => {
+    (invoice.nfse || []).forEach(n => {
+      todas.push({ invoice, nfse: n });
+    });
+  });
+
+  const pill = document.getElementById("nfseCount");
+  if (pill) pill.textContent = todas.length + " nota" + (todas.length !== 1 ? "s" : "");
+
+  const tbody = document.getElementById("nfseListBody");
+  if (!tbody) return;
+
+  if (todas.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="8" class="empty">Nenhuma NFS-e emitida ainda.</td></tr>`;
+    return;
+  }
+
+  // Ordenar por data de emissão (mais recente primeiro)
+  todas.sort((a, b) => (b.nfse.emitidaEm || "").localeCompare(a.nfse.emitidaEm || ""));
+
+  tbody.innerHTML = todas.map(({ invoice, nfse: n }) => `
+    <tr>
+      <td><strong>${escapeHtml(invoice.hbl)}</strong></td>
+      <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(invoice.client)}</td>
+      <td style="font-size:0.82rem;">${escapeHtml(n.tipo || "-")}</td>
+      <td>${n.valor ? brl.format(n.valor) : "-"}</td>
+      <td>${n.numero ? "<strong>#" + escapeHtml(String(n.numero)) + "</strong>" : "<span style='color:var(--muted)'>Aguardando</span>"}</td>
+      <td>
+        <span class="chip ${n.status === 'autorizado' ? 'ok' : n.status === 'erro' ? 'bad' : n.status === 'cancelado' ? '' : 'warn'}" style="font-size:0.75rem;">
+          ${n.status === "autorizado" ? "✅ Autorizada" :
+            n.status === "cancelado" ? "✕ Cancelada" :
+            n.status === "erro" ? "❌ Erro" :
+            "⏳ Aguardando autorização"}
+        </span>
+      </td>
+      <td style="font-size:0.82rem;color:var(--muted);">${n.emitidaEm ? new Date(n.emitidaEm).toLocaleString("pt-BR") : "-"}</td>
+      <td>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;">
+          ${n.pdfUrl ? `<a href="${escapeHtml(n.pdfUrl)}" target="_blank" class="text-button" style="font-size:0.78rem;">📄 PDF</a>` : ""}
+          ${!n.numero && n.status !== "erro" && n.status !== "cancelado" ? `<button class="text-button" data-nfse-consultar-ref="${escapeHtml(n.ref)}" data-nfse-consultar-hbl="${escapeHtml(invoice.hbl)}" style="font-size:0.78rem;color:var(--accent-3);">🔄 Atualizar</button>` : ""}
+          ${n.status === "autorizado" ? `<button class="text-button" data-nfse-cancelar-ref="${escapeHtml(n.ref)}" data-nfse-cancelar-hbl="${escapeHtml(invoice.hbl)}" style="font-size:0.78rem;color:var(--bad);">✕ Cancelar</button>` : ""}
+        </div>
+      </td>
+    </tr>
+  `).join("");
+}
+// ─────────────────────────────────────────────────────────────
+
 
 // Aba Usuários — injetar no HTML dinamicamente (só admin verá)
 (function injectUsersView() {
