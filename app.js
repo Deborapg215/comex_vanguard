@@ -298,14 +298,27 @@ async function loadRemoteState() {
       const hasData = Object.keys(remoteData).length > 0;
       if (hasData) {
         applyRemoteState(remoteData);
+        // Atualiza backup local com dados frescos do banco
+        try {
+          localStorage.setItem("vanguard_backup", JSON.stringify({
+            data: remoteData,
+            savedAt: new Date().toISOString()
+          }));
+        } catch (e) { /* ignora */ }
+      } else {
+        // Banco veio vazio — tenta restaurar do backup local
+        console.warn("loadRemoteState: banco retornou estado vazio, tentando backup local...");
+        restoreFromLocalBackup();
       }
     } else {
-      // Nenhum estado encontrado — pode ser RLS bloqueando (usuário não membro ainda)
-      console.warn("loadRemoteState: nenhum estado retornado — verifique se o usuário está em vanguard_members");
+      // Nenhum estado encontrado — tenta backup local
+      console.warn("loadRemoteState: nenhum estado retornado — tentando backup local...");
+      restoreFromLocalBackup();
     }
   } catch (e) {
     console.warn("loadRemoteState:", e.message);
     showSyncStatus("Erro ao carregar dados", true);
+    restoreFromLocalBackup();
   }
   isBootstrapping = false;
   document.getElementById("authEmail").textContent = currentUserEmail + (isAdmin() ? " (Admin)" : "");
@@ -319,12 +332,105 @@ async function loadRemoteState() {
 
 async function saveRemoteState() {
   const data = getPersistedState();
+
+  // Proteção: nunca salva estado vazio por cima de dados existentes
+  const hasInvoices = data.invoices && data.invoices.length > 0;
+  const hasReceipts = data.receipts && data.receipts.length > 0;
+  const hasClients = data.clients && data.clients.length > 0;
+  const hasAnyData = hasInvoices || hasReceipts || hasClients;
+
+  // Verifica se o banco tem dados antes de sobrescrever com vazio
+  if (!hasAnyData) {
+    try {
+      const rows = await sbFetch(
+        "/rest/v1/vanguard_company_state?select=data&company=eq.vanguard&limit=1",
+        { method: "GET" }
+      );
+      if (rows && rows.length > 0) {
+        const remoteData = rows[0].data || {};
+        const remoteHasData = (remoteData.invoices && remoteData.invoices.length > 0) ||
+                              (remoteData.receipts && remoteData.receipts.length > 0) ||
+                              (remoteData.clients && remoteData.clients.length > 0);
+        if (remoteHasData) {
+          console.warn("saveRemoteState: bloqueado — estado local vazio mas banco tem dados. Ignorando save.");
+          showSyncStatus("Proteção ativa: dados preservados no banco", false);
+          return;
+        }
+      }
+    } catch (e) {
+      console.warn("saveRemoteState: erro ao verificar banco antes de salvar:", e.message);
+      return; // Em caso de erro, não salva para não correr risco
+    }
+  }
+
   await sbFetch("/rest/v1/vanguard_company_state?company=eq.vanguard", {
     method: "PATCH",
     headers: { "Prefer": "return=minimal" },
     body: JSON.stringify({ data })
   });
+
+  // Backup local sempre que salvar no banco com sucesso
+  try {
+    localStorage.setItem("vanguard_backup", JSON.stringify({
+      data,
+      savedAt: new Date().toISOString()
+    }));
+  } catch (e) {
+    console.warn("Backup local falhou:", e.message);
+  }
+
   showSyncStatus("Salvo no banco");
+}
+
+// Recuperar backup local se banco vier vazio
+function restoreFromLocalBackup() {
+  try {
+    const raw = localStorage.getItem("vanguard_backup");
+    if (!raw) return false;
+    const { data, savedAt } = JSON.parse(raw);
+    const hasData = (data.invoices && data.invoices.length > 0) ||
+                    (data.receipts && data.receipts.length > 0) ||
+                    (data.clients && data.clients.length > 0);
+    if (hasData) {
+      applyRemoteState(data);
+      showSyncStatus("Dados restaurados do backup local (" + new Date(savedAt).toLocaleDateString("pt-BR") + ")");
+      return true;
+    }
+  } catch (e) {
+    console.warn("restoreFromLocalBackup:", e.message);
+  }
+  return false;
+}
+
+// Exportar backup manual (JSON)
+function exportBackup() {
+  const data = getPersistedState();
+  const blob = new Blob([JSON.stringify({ data, exportedAt: new Date().toISOString() }, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "vanguard_backup_" + new Date().toISOString().slice(0, 10) + ".json";
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// Importar backup manual (JSON)
+function importBackup(file) {
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      const { data } = JSON.parse(e.target.result);
+      if (!data) throw new Error("Arquivo inválido");
+      applyRemoteState(data);
+      saveRemoteState();
+      consolidateInvoices();
+      render();
+      alert("Backup restaurado com sucesso!");
+    } catch (err) {
+      alert("Erro ao importar backup: " + err.message);
+    }
+  };
+  reader.readAsText(file);
 }
 
 function applyRoleRestrictions() {
