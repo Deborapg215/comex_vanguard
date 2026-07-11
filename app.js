@@ -286,12 +286,26 @@ async function loadMemberRole() {
 async function loadRemoteState() {
   showSyncStatus("Carregando dados da empresa...");
   await loadMemberRole();
-  const rows = await sbFetch(
-    "/rest/v1/vanguard_company_state?select=data&company=eq.vanguard&limit=1",
-    { method: "GET" }
-  );
-  if (rows && rows.length > 0) {
-    applyRemoteState(rows[0].data || {});
+  try {
+    const rows = await sbFetch(
+      "/rest/v1/vanguard_company_state?select=data&company=eq.vanguard&limit=1",
+      { method: "GET" }
+    );
+    if (rows && rows.length > 0) {
+      const remoteData = rows[0].data || {};
+      // Só aplica se o estado remoto tiver dados reais (não vazio)
+      // Isso evita que um login de usuário sem acesso apague os dados da empresa
+      const hasData = Object.keys(remoteData).length > 0;
+      if (hasData) {
+        applyRemoteState(remoteData);
+      }
+    } else {
+      // Nenhum estado encontrado — pode ser RLS bloqueando (usuário não membro ainda)
+      console.warn("loadRemoteState: nenhum estado retornado — verifique se o usuário está em vanguard_members");
+    }
+  } catch (e) {
+    console.warn("loadRemoteState:", e.message);
+    showSyncStatus("Erro ao carregar dados", true);
   }
   isBootstrapping = false;
   document.getElementById("authEmail").textContent = currentUserEmail + (isAdmin() ? " (Admin)" : "");
@@ -366,28 +380,38 @@ async function removeMember(memberId) {
 }
 
 async function selfRegisterIfNeeded() {
-  // Ao logar, verifica se o usuário já tem registro em vanguard_members
-  // Se não tiver, cria como operador
+  // Verifica se o usuário já tem registro em vanguard_members
+  // O INSERT usa uma policy especial (self_register) que permite auto-cadastro
   try {
     const rows = await sbFetch(
-      "/rest/v1/vanguard_members?user_id=eq." + currentUserId + "&limit=1",
+      "/rest/v1/vanguard_members?select=user_id,email,role&user_id=eq." + currentUserId + "&limit=1",
       { method: "GET" }
     );
     if (!rows || rows.length === 0) {
-      // Auto-registro como operador
-      await sbFetch("/rest/v1/vanguard_members", {
-        method: "POST",
-        headers: { "Prefer": "return=minimal" },
-        body: JSON.stringify({ user_id: currentUserId, email: currentUserEmail, role: "operador" })
-      });
-    } else {
-      // Atualiza email se mudou
-      if (rows[0].email !== currentUserEmail) {
-        await sbFetch("/rest/v1/vanguard_members?user_id=eq." + currentUserId, {
-          method: "PATCH",
+      // Novo usuário — tenta auto-registro como operador
+      // A policy "Usuário se auto-registra" no Supabase permite esse INSERT
+      try {
+        await sbFetch("/rest/v1/vanguard_members", {
+          method: "POST",
           headers: { "Prefer": "return=minimal" },
-          body: JSON.stringify({ email: currentUserEmail })
+          body: JSON.stringify({ user_id: currentUserId, email: currentUserEmail, role: "operador" })
         });
+      } catch (insertErr) {
+        // Se falhar (ex: RLS), loga mas não deixa apagar dados da empresa
+        console.warn("selfRegisterIfNeeded INSERT:", insertErr.message);
+      }
+    } else {
+      // Usuário já existe — atualiza email se mudou, preserva o role
+      if (rows[0].email !== currentUserEmail) {
+        try {
+          await sbFetch("/rest/v1/vanguard_members?user_id=eq." + currentUserId, {
+            method: "PATCH",
+            headers: { "Prefer": "return=minimal" },
+            body: JSON.stringify({ email: currentUserEmail })
+          });
+        } catch (patchErr) {
+          console.warn("selfRegisterIfNeeded PATCH:", patchErr.message);
+        }
       }
     }
   } catch (e) {
