@@ -557,9 +557,9 @@
             <h2 id="loginTitle">Entrar no Vanguard Invoice Hub</h2>
           </div>
         </div>
-        <form class="auth-form" id="loginForm">
-          <label>E-mail<input id="loginEmail" type="email" value="admin@vanguard.local" autocomplete="username" required /></label>
-          <label>Senha<input id="loginPassword" type="password" value="admin123" autocomplete="current-password" required /></label>
+        <form class="auth-form" id="loginForm" autocomplete="off">
+          <label>E-mail<input id="loginEmail" type="email" value="" placeholder="Digite seu e-mail" autocomplete="off" autocapitalize="none" spellcheck="false" required /></label>
+          <label>Senha<input id="loginPassword" type="password" value="" placeholder="Digite sua senha" autocomplete="new-password" required /></label>
           <button class="primary-button" type="submit">Entrar</button>
           <button class="text-button" type="button" id="firstAccessButton">Primeiro acesso</button>
           <p class="login-error" id="loginError"></p>

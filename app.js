@@ -914,7 +914,7 @@ async function renderUsersView() {
     container.innerHTML = members.length ? members.map((m) => {
       const protectedOwner = m.role === "super_admin";
       const self = m.user_id === currentUserId;
-      const disabled = protectedOwner || self || (!isSuperAdmin() && m.role === "admin");
+      const disabled = protectedOwner || self;
       const status = m.active === false ? "Inativo" : (m.user_id ? "Ativo" : "Aguardando primeiro acesso");
       return `
       <tr>
@@ -4325,11 +4325,11 @@ function renderNfseList() {
   content.appendChild(section);
   navBtn.addEventListener("click",()=>{document.querySelectorAll(".nav-item,.view").forEach(el=>el.classList.remove("active"));navBtn.classList.add("active");section.classList.add("active");renderUsersView();});
   section.querySelector("#addMemberButton").addEventListener("click",async()=>{const email=section.querySelector("#newMemberEmail").value.trim().toLowerCase(), role=section.querySelector("#newMemberRole").value;if(!email||!email.includes("@")){alert("Informe um e-mail válido.");return;}if(role==="admin"&&!isSuperAdmin()&&!isAdmin()){alert("Sem permissão.");return;}const btn=section.querySelector("#addMemberButton");const original=btn.textContent;try{btn.disabled=true;btn.textContent="Enviando convite...";await addMember(email,role);addLog("success","Usuário autorizado e convidado",`${email} · ${role} · por ${currentUserEmail}`);section.querySelector("#newMemberEmail").value="";await renderUsersView();alert("Usuário autorizado. O convite para criação do acesso foi enviado por e-mail.");}catch(e){await renderUsersView();alert("O usuário pode ter sido autorizado, mas o convite não foi enviado: "+e.message);}finally{btn.disabled=false;btn.textContent=original;}});
-  section.addEventListener("change",async e=>{const id=e.target.dataset.memberRole;if(!id||!isAdmin())return;try{await updateMemberRole(id,e.target.value);addLog("success","Perfil alterado",`${e.target.value} · por ${currentUserEmail}`);await renderUsersView();}catch(err){alert(err.message);}});
+  section.addEventListener("change",async e=>{const id=e.target.dataset.memberRole;if(!id||!isAdmin())return;const select=e.target;const role=select.value;const label=role==="admin"?"Administrador Vanguard":role==="operador"?"Operador":role==="consulta"?"Consulta":role;if(!confirm(`Deseja alterar o perfil deste usuário para ${label}?`)){await renderUsersView();return;}try{select.disabled=true;await updateMemberRole(id,role);addLog("success","Perfil alterado",`${role} · por ${currentUserEmail}`);await renderUsersView();}catch(err){alert("Não foi possível alterar o perfil: "+err.message);await renderUsersView();}});
   section.addEventListener("click",async e=>{
     const inviteId=e.target.dataset.resendInvite;
     if(inviteId&&isAdmin()){const email=e.target.dataset.email;if(!confirm(`Reenviar o convite de acesso para ${email}?`))return;try{e.target.disabled=true;e.target.textContent="Enviando...";await sendMemberInvite(email);addLog("success","Convite reenviado",`${email} · por ${currentUserEmail}`);alert("Convite reenviado por e-mail.");}catch(err){alert("Não foi possível reenviar o convite: "+err.message);}finally{await renderUsersView();}return;}
-    const id=e.target.dataset.toggleMember;if(!id||!isAdmin())return;const active=e.target.dataset.active!=="true";if(!confirm(`${active?"Ativar":"Desativar"} este usuário?`))return;try{await setMemberActive(id,active);addLog("warning",active?"Usuário ativado":"Usuário desativado",`por ${currentUserEmail}`);await renderUsersView();}catch(err){alert(err.message);}
+    const id=e.target.dataset.toggleMember;if(!id||!isAdmin())return;const active=e.target.dataset.active!=="true";if(!confirm(`${active?"Ativar":"Desativar"} este usuário?`))return;try{await setMemberActive(id,active);addLog("warning",active?"Usuário ativado":"Usuário desativado",`por ${currentUserEmail}`);await renderUsersView();}catch(err){alert("Não foi possível alterar o status do usuário: "+err.message);await renderUsersView();}
   });
 })();
 
