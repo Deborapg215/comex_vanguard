@@ -850,6 +850,57 @@ async function loadMembers() {
   return rows || [];
 }
 
+async function sendPasswordRecovery(email) {
+  const normalizedEmail = email.trim().toLowerCase();
+  const redirectTo = window.location.origin;
+  const response = await fetch(SUPABASE_URL + "/auth/v1/recover?redirect_to=" + encodeURIComponent(redirectTo), {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "apikey": SUPABASE_ANON_KEY
+    },
+    body: JSON.stringify({ email: normalizedEmail })
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.error_description || payload.msg || payload.message || "Não foi possível enviar o e-mail de redefinição.");
+  return payload;
+}
+
+async function completePasswordRecoveryFromUrl() {
+  const hash = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+  const query = new URLSearchParams(window.location.search);
+  const type = hash.get("type") || query.get("type");
+  const recoveryToken = hash.get("access_token");
+  if (type !== "recovery" || !recoveryToken) return false;
+
+  const newPassword = window.prompt("Crie sua nova senha de acesso ao Vanguard Invoice Hub (mínimo de 8 caracteres):");
+  if (newPassword === null) return true;
+  if (newPassword.length < 8) {
+    alert("A senha deve possuir pelo menos 8 caracteres. Abra novamente o link recebido por e-mail para concluir.");
+    return true;
+  }
+
+  const response = await fetch(SUPABASE_URL + "/auth/v1/user", {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+      "apikey": SUPABASE_ANON_KEY,
+      "Authorization": "Bearer " + recoveryToken
+    },
+    body: JSON.stringify({ password: newPassword })
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    alert("Não foi possível definir a nova senha: " + (payload.msg || payload.message || payload.error_description || "link inválido ou expirado"));
+    return true;
+  }
+
+  history.replaceState(null, "", window.location.pathname);
+  alert("Senha criada com sucesso. Agora faça login com seu e-mail e a nova senha.");
+  showLogin("Senha criada com sucesso. Faça login para continuar.");
+  return true;
+}
+
 async function sendMemberInvite(email) {
   const response = await fetch(SUPABASE_URL + "/functions/v1/invite-user", {
     method: "POST",
@@ -926,7 +977,7 @@ async function renderUsersView() {
         </select>`}</td>
         <td><span class="status-pill">${status}</span></td>
         <td>${m.created_at ? new Date(m.created_at).toLocaleDateString("pt-BR") : "-"}</td>
-        <td>${protectedOwner ? '<span style="color:var(--muted);font-size:.8rem">Protegido</span>' : self ? '<span style="color:var(--muted);font-size:.8rem">Você</span>' : `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">${!m.user_id && m.active !== false ? `<button class="text-button" data-resend-invite="${m.id}" data-email="${escapeHtml(m.email)}">Reenviar convite</button>` : ""}<button class="text-button" data-toggle-member="${m.id}" data-active="${m.active === false ? "false" : "true"}">${m.active === false ? "Ativar" : "Desativar"}</button></div>`}</td>
+        <td>${protectedOwner ? '<span style="color:var(--muted);font-size:.8rem">Protegido</span>' : self ? '<span style="color:var(--muted);font-size:.8rem">Você</span>' : `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">${!m.user_id && m.active !== false ? `<button class="text-button" data-resend-invite="${m.id}" data-email="${escapeHtml(m.email)}">Reenviar convite</button>` : ""}${m.user_id && m.active !== false ? `<button class="text-button" data-reset-password="${m.id}" data-email="${escapeHtml(m.email)}">Redefinir senha</button>` : ""}<button class="text-button" data-toggle-member="${m.id}" data-active="${m.active === false ? "false" : "true"}">${m.active === false ? "Ativar" : "Desativar"}</button></div>`}</td>
       </tr>`;
     }).join("") : "<tr><td colspan='5' class='empty'>Nenhum membro cadastrado.</td></tr>";
     const pill = document.getElementById("membersCount");
@@ -4328,7 +4379,9 @@ function renderNfseList() {
   section.addEventListener("change",async e=>{const id=e.target.dataset.memberRole;if(!id||!isAdmin())return;const select=e.target;const role=select.value;const label=role==="admin"?"Administrador Vanguard":role==="operador"?"Operador":role==="consulta"?"Consulta":role;if(!confirm(`Deseja alterar o perfil deste usuário para ${label}?`)){await renderUsersView();return;}try{select.disabled=true;await updateMemberRole(id,role);addLog("success","Perfil alterado",`${role} · por ${currentUserEmail}`);await renderUsersView();}catch(err){alert("Não foi possível alterar o perfil: "+err.message);await renderUsersView();}});
   section.addEventListener("click",async e=>{
     const inviteId=e.target.dataset.resendInvite;
-    if(inviteId&&isAdmin()){const email=e.target.dataset.email;if(!confirm(`Reenviar o convite de acesso para ${email}?`))return;try{e.target.disabled=true;e.target.textContent="Enviando...";await sendMemberInvite(email);addLog("success","Convite reenviado",`${email} · por ${currentUserEmail}`);alert("Convite reenviado por e-mail.");}catch(err){alert("Não foi possível reenviar o convite: "+err.message);}finally{await renderUsersView();}return;}
+    if(inviteId&&isAdmin()){const email=e.target.dataset.email;if(!confirm(`Reenviar o convite de acesso para ${email}?`))return;try{e.target.disabled=true;e.target.textContent="Enviando...";await sendMemberInvite(email);addLog("success","Convite reenviado",`${email} · por ${currentUserEmail}`);alert("Convite reenviado por e-mail.");}catch(err){const msg=String(err.message||"");if(/already been registered|already registered|already exists/i.test(msg)){try{await sendPasswordRecovery(email);addLog("success","Link de redefinição enviado",`${email} · por ${currentUserEmail}`);alert("Este e-mail já possui cadastro. Enviamos um novo link para o usuário criar/redefinir a senha.");}catch(resetErr){alert("O usuário já possui cadastro, mas não foi possível enviar o link de redefinição: "+resetErr.message);}}else{alert("Não foi possível reenviar o convite: "+msg);}}finally{await renderUsersView();}return;}
+    const resetId=e.target.dataset.resetPassword;
+    if(resetId&&isAdmin()){const email=e.target.dataset.email;if(!confirm(`Enviar um e-mail para ${email} criar uma nova senha?`))return;try{e.target.disabled=true;e.target.textContent="Enviando...";await sendPasswordRecovery(email);addLog("success","Redefinição de senha enviada",`${email} · por ${currentUserEmail}`);alert("E-mail de redefinição enviado. O usuário poderá criar uma nova senha pelo link recebido.");}catch(err){alert("Não foi possível enviar a redefinição de senha: "+err.message);}finally{await renderUsersView();}return;}
     const id=e.target.dataset.toggleMember;if(!id||!isAdmin())return;const active=e.target.dataset.active!=="true";if(!confirm(`${active?"Ativar":"Desativar"} este usuário?`))return;try{await setMemberActive(id,active);addLog("warning",active?"Usuário ativado":"Usuário desativado",`por ${currentUserEmail}`);await renderUsersView();}catch(err){alert("Não foi possível alterar o status do usuário: "+err.message);await renderUsersView();}
   });
 })();
@@ -4348,6 +4401,7 @@ function renderNfseList() {
 
 // Inicialização: tenta restaurar sessão salva ou pede login
 (async function init() {
+  if (await completePasswordRecoveryFromUrl()) return;
   if (!authToken) { showLogin(); return; }
   try {
     const user = await sbFetch("/auth/v1/user", { method: "GET" });
