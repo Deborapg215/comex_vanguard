@@ -78,8 +78,10 @@ let currentUserRole = sessionStorage.getItem("vanguardUserRole") || "operador";
 let isBootstrapping = true;
 let saveTimer = null;
 
-function isAdmin() { return currentUserRole === "admin"; }
+function isSuperAdmin() { return currentUserRole === "super_admin"; }
+function isAdmin() { return currentUserRole === "admin" || currentUserRole === "super_admin"; }
 function isOperador() { return currentUserRole === "operador"; }
+function isConsulta() { return currentUserRole === "consulta"; }
 
 const persistentKeys = [
   "imports",
@@ -90,6 +92,8 @@ const persistentKeys = [
   "receipts",
   "receiptAllocations",
   "clients",
+  "masterClients",
+  "servicesCatalog",
   "rates",
   "fxTables",
   "bank",
@@ -119,6 +123,8 @@ const state = {
   receipts: [],
   receiptAllocations: [],
   clients: [],
+  masterClients: [],
+  servicesCatalog: [],
   rates: [],
   fxTables: {},
   billed: [],
@@ -218,19 +224,378 @@ if (!state.bank) {
     instructions: "Pagamento conforme dados bancários informados abaixo."
   };
 }
-if (!state.clients.length) {
-  state.clients = [
-    {
-      name: "Atlas Importadora",
-      cnpj: "11.111.111/0001-11",
-      dueDays: 45,
-      fee: 1.75,
-      fxProfile: "Vanguard",
-      contractUntil: "2026-12-31",
-      status: "ativo"
-    }
-  ];
+const specialClientSeed = [
+  {
+    "name": "ASIA SHIPPING",
+    "cnpj": "Não informado",
+    "dueDays": 10,
+    "fee": 3.0,
+    "fxProfile": "Negociada 3%",
+    "contractUntil": "",
+    "status": "ativo"
+  },
+  {
+    "name": "BDP",
+    "cnpj": "Não informado",
+    "dueDays": 60,
+    "fee": 3.0,
+    "fxProfile": "Negociada 3%",
+    "contractUntil": "",
+    "status": "ativo"
+  },
+  {
+    "name": "BRUNIN",
+    "cnpj": "Não informado",
+    "dueDays": 30,
+    "fee": 3.0,
+    "fxProfile": "Negociada 3%",
+    "contractUntil": "",
+    "status": "ativo"
+  },
+  {
+    "name": "CEVA FREIGHT MANAGEMENT DO",
+    "cnpj": "Não informado",
+    "dueDays": 60,
+    "fee": 1.0,
+    "fxProfile": "Negociada 1%",
+    "contractUntil": "",
+    "status": "ativo"
+  },
+  {
+    "name": "CH ROBINSON",
+    "cnpj": "Não informado",
+    "dueDays": 15,
+    "fee": 2.0,
+    "fxProfile": "Negociada 2%",
+    "contractUntil": "",
+    "status": "ativo"
+  },
+  {
+    "name": "CLIPPER",
+    "cnpj": "Não informado",
+    "dueDays": 30,
+    "fee": 2.0,
+    "fxProfile": "Negociada 2%",
+    "contractUntil": "",
+    "status": "ativo"
+  },
+  {
+    "name": "CRANE",
+    "cnpj": "Não informado",
+    "dueDays": 15,
+    "fee": 3.0,
+    "fxProfile": "Negociada 3%",
+    "contractUntil": "",
+    "status": "ativo"
+  },
+  {
+    "name": "DACHSER",
+    "cnpj": "Não informado",
+    "dueDays": 15,
+    "fee": 2.0,
+    "fxProfile": "Negociada 2%",
+    "contractUntil": "",
+    "status": "ativo"
+  },
+  {
+    "name": "DHL",
+    "cnpj": "Não informado",
+    "dueDays": 60,
+    "fee": 1.0,
+    "fxProfile": "Negociada 1%",
+    "contractUntil": "",
+    "status": "ativo"
+  },
+  {
+    "name": "DP WORLD",
+    "cnpj": "Não informado",
+    "dueDays": 45,
+    "fee": 1.5,
+    "fxProfile": "Negociada 1,5%",
+    "contractUntil": "",
+    "status": "ativo"
+  },
+  {
+    "name": "DSV",
+    "cnpj": "Não informado",
+    "dueDays": 60,
+    "fee": 1.0,
+    "fxProfile": "Negociada 1%",
+    "contractUntil": "",
+    "status": "ativo"
+  },
+  {
+    "name": "EXALOG (CLIENTE AGC)",
+    "cnpj": "Não informado",
+    "dueDays": 15,
+    "fee": 3.0,
+    "fxProfile": "Negociada 3%",
+    "contractUntil": "",
+    "status": "ativo"
+  },
+  {
+    "name": "EXPEDITORS",
+    "cnpj": "Não informado",
+    "dueDays": 30,
+    "fee": 1.0,
+    "fxProfile": "Negociada 1%",
+    "contractUntil": "",
+    "status": "ativo"
+  },
+  {
+    "name": "FIGWAL",
+    "cnpj": "Não informado",
+    "dueDays": 15,
+    "fee": 2.0,
+    "fxProfile": "Negociada 2%",
+    "contractUntil": "",
+    "status": "ativo"
+  },
+  {
+    "name": "GEODIS",
+    "cnpj": "Não informado",
+    "dueDays": 30,
+    "fee": 3.0,
+    "fxProfile": "Negociada 3%",
+    "contractUntil": "",
+    "status": "ativo"
+  },
+  {
+    "name": "GP CARGO",
+    "cnpj": "Não informado",
+    "dueDays": 7,
+    "fee": 3.0,
+    "fxProfile": "Negociada 3%",
+    "contractUntil": "",
+    "status": "ativo"
+  },
+  {
+    "name": "HELLMANN",
+    "cnpj": "Não informado",
+    "dueDays": 45,
+    "fee": 3.0,
+    "fxProfile": "Negociada 3%",
+    "contractUntil": "",
+    "status": "ativo"
+  },
+  {
+    "name": "IGOR FERNANDO SIMIDAMORE",
+    "cnpj": "Não informado",
+    "dueDays": 10,
+    "fee": 3.0,
+    "fxProfile": "Negociada 3%",
+    "contractUntil": "",
+    "status": "ativo"
+  },
+  {
+    "name": "INTERFREIGHT",
+    "cnpj": "Não informado",
+    "dueDays": 30,
+    "fee": 2.0,
+    "fxProfile": "Negociada 2%",
+    "contractUntil": "",
+    "status": "ativo"
+  },
+  {
+    "name": "IVEZOON AGENCIAMENTO",
+    "cnpj": "Não informado",
+    "dueDays": 15,
+    "fee": 2.0,
+    "fxProfile": "Negociada 2%",
+    "contractUntil": "",
+    "status": "ativo"
+  },
+  {
+    "name": "JAS DO BRASIL",
+    "cnpj": "Não informado",
+    "dueDays": 30,
+    "fee": 2.0,
+    "fxProfile": "Negociada 2%",
+    "contractUntil": "",
+    "status": "ativo"
+  },
+  {
+    "name": "KERRY",
+    "cnpj": "Não informado",
+    "dueDays": 15,
+    "fee": 3.0,
+    "fxProfile": "Negociada 3%",
+    "contractUntil": "",
+    "status": "ativo"
+  },
+  {
+    "name": "KUEHNE",
+    "cnpj": "Não informado",
+    "dueDays": 30,
+    "fee": 1.0,
+    "fxProfile": "Negociada 1%",
+    "contractUntil": "",
+    "status": "ativo"
+  },
+  {
+    "name": "LOGLINE",
+    "cnpj": "Não informado",
+    "dueDays": 15,
+    "fee": 1.0,
+    "fxProfile": "Negociada 1%",
+    "contractUntil": "",
+    "status": "ativo"
+  },
+  {
+    "name": "LOX SHIPPING",
+    "cnpj": "Não informado",
+    "dueDays": 30,
+    "fee": 2.0,
+    "fxProfile": "Negociada 2%",
+    "contractUntil": "",
+    "status": "ativo"
+  },
+  {
+    "name": "MAERSK",
+    "cnpj": "Não informado",
+    "dueDays": 60,
+    "fee": 3.0,
+    "fxProfile": "Negociada 3%",
+    "contractUntil": "",
+    "status": "ativo"
+  },
+  {
+    "name": "MAHLE",
+    "cnpj": "Não informado",
+    "dueDays": 30,
+    "fee": 1.0,
+    "fxProfile": "Negociada 1%",
+    "contractUntil": "",
+    "status": "ativo"
+  },
+  {
+    "name": "OIA",
+    "cnpj": "Não informado",
+    "dueDays": 60,
+    "fee": 2.0,
+    "fxProfile": "Negociada 2%",
+    "contractUntil": "",
+    "status": "ativo"
+  },
+  {
+    "name": "RHENUS",
+    "cnpj": "Não informado",
+    "dueDays": 45,
+    "fee": 2.0,
+    "fxProfile": "Negociada 2%",
+    "contractUntil": "",
+    "status": "ativo"
+  },
+  {
+    "name": "SAMSUNG SDS",
+    "cnpj": "Não informado",
+    "dueDays": 21,
+    "fee": 3.0,
+    "fxProfile": "Negociada 3%",
+    "contractUntil": "",
+    "status": "ativo"
+  },
+  {
+    "name": "SCHENKER",
+    "cnpj": "Não informado",
+    "dueDays": 30,
+    "fee": 1.0,
+    "fxProfile": "Negociada 1%",
+    "contractUntil": "",
+    "status": "ativo"
+  },
+  {
+    "name": "SERPA",
+    "cnpj": "Não informado",
+    "dueDays": 20,
+    "fee": 2.0,
+    "fxProfile": "Negociada 2%",
+    "contractUntil": "",
+    "status": "ativo"
+  },
+  {
+    "name": "SCAN GLOBAL",
+    "cnpj": "Não informado",
+    "dueDays": 15,
+    "fee": 3.0,
+    "fxProfile": "Negociada 3%",
+    "contractUntil": "",
+    "status": "ativo"
+  },
+  {
+    "name": "SUNTRANS",
+    "cnpj": "Não informado",
+    "dueDays": 10,
+    "fee": 2.0,
+    "fxProfile": "Negociada 2%",
+    "contractUntil": "",
+    "status": "ativo"
+  },
+  {
+    "name": "TASK",
+    "cnpj": "Não informado",
+    "dueDays": 15,
+    "fee": 2.0,
+    "fxProfile": "Negociada 2%",
+    "contractUntil": "",
+    "status": "ativo"
+  },
+  {
+    "name": "THE CHEMOURS",
+    "cnpj": "Não informado",
+    "dueDays": 45,
+    "fee": 0.0,
+    "fxProfile": "Vanguard",
+    "contractUntil": "",
+    "status": "ativo"
+  },
+  {
+    "name": "VENTANA",
+    "cnpj": "Não informado",
+    "dueDays": 15,
+    "fee": 2.0,
+    "fxProfile": "Negociada 2%",
+    "contractUntil": "",
+    "status": "ativo"
+  },
+  {
+    "name": "VOLKSWAGEN",
+    "cnpj": "Não informado",
+    "dueDays": 30,
+    "fee": 2.0,
+    "fxProfile": "Negociada 2%",
+    "contractUntil": "",
+    "status": "ativo"
+  },
+  {
+    "name": "VP LOG",
+    "cnpj": "Não informado",
+    "dueDays": 10,
+    "fee": 3.0,
+    "fxProfile": "Negociada 3%",
+    "contractUntil": "",
+    "status": "ativo"
+  },
+  {
+    "name": "YUSEN",
+    "cnpj": "Não informado",
+    "dueDays": 15,
+    "fee": 2.0,
+    "fxProfile": "Negociada 2%",
+    "contractUntil": "",
+    "status": "ativo"
+  }
+];
+
+function ensureSpecialClientSeed() {
+  state.clients ||= [];
+  specialClientSeed.forEach((seed) => {
+    const exists = state.clients.some((item) => normalizeKey(item.name) === normalizeKey(seed.name));
+    if (!exists) state.clients.push({ ...seed });
+  });
 }
+
+if (!state.clients.length) state.clients = specialClientSeed.map((item) => ({ ...item }));
 
 const brl = new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" });
 const numberFmt = new Intl.NumberFormat("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 4 });
@@ -268,18 +633,35 @@ async function login(email, password) {
 
 async function loadMemberRole() {
   try {
-    const rows = await sbFetch(
-      "/rest/v1/vanguard_members?select=role&user_id=eq." + currentUserId + "&limit=1",
-      { method: "GET" }
-    );
+    // Primeiro procura pelo UUID autenticado. Isso evita que caracteres do e-mail
+    // interfiram no filtro OR do PostgREST e garante o perfil correto após o convite.
+    let rows = [];
+    if (currentUserId) {
+      rows = await sbFetch(
+        "/rest/v1/vanguard_members?select=role,active,user_id,email&user_id=eq." + encodeURIComponent(currentUserId) + "&limit=1",
+        { method: "GET" }
+      );
+    }
+
+    // No primeiro acesso o cadastro pode ainda estar somente pelo e-mail autorizado.
+    if ((!rows || rows.length === 0) && currentUserEmail) {
+      rows = await sbFetch(
+        "/rest/v1/vanguard_members?select=role,active,user_id,email&email=eq." + encodeURIComponent(currentUserEmail.toLowerCase()) + "&limit=1",
+        { method: "GET" }
+      );
+    }
+
     if (rows && rows.length > 0) {
+      if (rows[0].active === false) throw new Error("Usuário inativo");
       currentUserRole = rows[0].role || "operador";
     } else {
       currentUserRole = "operador";
     }
     sessionStorage.setItem("vanguardUserRole", currentUserRole);
-  } catch {
+  } catch (error) {
+    console.warn("loadMemberRole:", error?.message || error);
     currentUserRole = "operador";
+    sessionStorage.setItem("vanguardUserRole", currentUserRole);
   }
 }
 
@@ -321,11 +703,14 @@ async function loadRemoteState() {
     restoreFromLocalBackup();
   }
   isBootstrapping = false;
-  document.getElementById("authEmail").textContent = currentUserEmail + (isAdmin() ? " (Admin)" : "");
+  document.getElementById("authEmail").textContent = currentUserEmail + (isSuperAdmin() ? " (Proprietária)" : isAdmin() ? " (Admin)" : isConsulta() ? " (Consulta)" : " (Operador)");
   document.getElementById("loginModal").hidden = true;
   showSyncStatus("Dados sincronizados");
   applyRoleRestrictions();
+  ensureSpecialClientSeed();
+  seedMasterDataFromOperation();
   consolidateInvoices();
+  seedMasterDataFromOperation();
   render();
   if (isAdmin()) renderUsersView();
 }
@@ -443,6 +828,11 @@ function applyRoleRestrictions() {
   // Aba Usuários: só admin vê (criada dinamicamente)
   const usersNav = document.querySelector(".nav-item[data-view='users']");
   if (usersNav) usersNav.style.display = isAdmin() ? "" : "none";
+  const dataAdminNav = document.querySelector(".nav-item[data-view='data-admin']");
+  if (dataAdminNav) dataAdminNav.style.display = isAdmin() ? "" : "none";
+
+  // Consulta: bloqueia ações de gravação, mantendo navegação e relatórios.
+  if (isConsulta()) document.querySelectorAll("button.primary-button:not([id^=export]), button.danger-button").forEach((b) => { b.disabled = true; b.title = "Perfil Consulta: somente leitura"; });
 
   // Botões destrutivos: só admin
   const clearImports = document.getElementById("clearImports");
@@ -454,21 +844,38 @@ function applyRoleRestrictions() {
 // ── Gestão de usuários (admin only) ──────────────────────────
 async function loadMembers() {
   const rows = await sbFetch(
-    "/rest/v1/vanguard_members?select=id,email,role,created_at&order=created_at.asc",
+    "/rest/v1/vanguard_members?select=id,user_id,email,role,active,created_at&order=created_at.asc",
     { method: "GET" }
   );
   return rows || [];
 }
 
+async function sendMemberInvite(email) {
+  const response = await fetch(SUPABASE_URL + "/functions/v1/invite-user", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "apikey": SUPABASE_ANON_KEY,
+      "Authorization": "Bearer " + authToken
+    },
+    body: JSON.stringify({
+      email: email.trim().toLowerCase(),
+      redirectTo: window.location.origin
+    })
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.error || payload.message || "Não foi possível enviar o convite.");
+  return payload;
+}
+
 async function addMember(email, role) {
-  // Busca o user_id pelo email via admin — precisa que o usuário já exista no Auth
-  // Estratégia: o próprio usuário se auto-cadastra no primeiro login se não for membro
-  // Admin adiciona pelo email; quando esse usuário logar, o sistema encontra o registro
+  const normalizedEmail = email.trim().toLowerCase();
   await sbFetch("/rest/v1/vanguard_members", {
     method: "POST",
     headers: { "Prefer": "return=minimal" },
-    body: JSON.stringify({ user_id: "00000000-0000-0000-0000-000000000000", email, role })
+    body: JSON.stringify({ user_id: null, email: normalizedEmail, role, active: true })
   });
+  return await sendMemberInvite(normalizedEmail);
 }
 
 async function updateMemberRole(memberId, role) {
@@ -486,68 +893,70 @@ async function removeMember(memberId) {
 }
 
 async function selfRegisterIfNeeded() {
-  // Verifica se o usuário já tem registro em vanguard_members
-  // O INSERT usa uma policy especial (self_register) que permite auto-cadastro
+  // Segurança V3.6.7: somente e-mails previamente autorizados entram no sistema.
   try {
-    const rows = await sbFetch(
-      "/rest/v1/vanguard_members?select=user_id,email,role&user_id=eq." + currentUserId + "&limit=1",
-      { method: "GET" }
-    );
-    if (!rows || rows.length === 0) {
-      // Novo usuário — tenta auto-registro como operador
-      // A policy "Usuário se auto-registra" no Supabase permite esse INSERT
-      try {
-        await sbFetch("/rest/v1/vanguard_members", {
-          method: "POST",
-          headers: { "Prefer": "return=minimal" },
-          body: JSON.stringify({ user_id: currentUserId, email: currentUserEmail, role: "operador" })
-        });
-      } catch (insertErr) {
-        // Se falhar (ex: RLS), loga mas não deixa apagar dados da empresa
-        console.warn("selfRegisterIfNeeded INSERT:", insertErr.message);
-      }
-    } else {
-      // Usuário já existe — atualiza email se mudou, preserva o role
-      if (rows[0].email !== currentUserEmail) {
-        try {
-          await sbFetch("/rest/v1/vanguard_members?user_id=eq." + currentUserId, {
-            method: "PATCH",
-            headers: { "Prefer": "return=minimal" },
-            body: JSON.stringify({ email: currentUserEmail })
-          });
-        } catch (patchErr) {
-          console.warn("selfRegisterIfNeeded PATCH:", patchErr.message);
-        }
-      }
-    }
-  } catch (e) {
-    console.warn("selfRegisterIfNeeded:", e.message);
-  }
+    let rows = await sbFetch("/rest/v1/vanguard_members?select=id,user_id,email,role,active&email=eq." + encodeURIComponent(currentUserEmail.toLowerCase()) + "&limit=1", { method:"GET" });
+    if (!rows || !rows.length) throw new Error("Este e-mail ainda não foi autorizado por um Administrador Vanguard.");
+    const member=rows[0];
+    if(member.active===false) throw new Error("Este acesso está inativo. Procure um Administrador Vanguard.");
+    if(!member.user_id){
+      await sbFetch("/rest/v1/vanguard_members?id=eq."+member.id,{method:"PATCH",headers:{"Prefer":"return=minimal"},body:JSON.stringify({user_id:currentUserId})});
+    } else if(member.user_id!==currentUserId){ throw new Error("Este e-mail já está vinculado a outro usuário."); }
+  } catch(e){ throw e; }
 }
 
 async function renderUsersView() {
   const container = document.getElementById("usersViewBody");
   if (!container) return;
-  container.innerHTML = "<tr><td colspan='3' class='empty'>Carregando...</td></tr>";
+  container.innerHTML = "<tr><td colspan='5' class='empty'>Carregando...</td></tr>";
   try {
     const members = await loadMembers();
-    container.innerHTML = members.length ? members.map((m) => `
+    container.innerHTML = members.length ? members.map((m) => {
+      const protectedOwner = m.role === "super_admin";
+      const self = m.user_id === currentUserId;
+      const disabled = protectedOwner || self || (!isSuperAdmin() && m.role === "admin");
+      const status = m.active === false ? "Inativo" : (m.user_id ? "Ativo" : "Aguardando primeiro acesso");
+      return `
       <tr>
         <td>${escapeHtml(m.email)}</td>
-        <td>
-          <select data-member-role="${m.id}" ${m.user_id === currentUserId ? "disabled title='Você não pode alterar seu próprio perfil'" : ""}>
-            <option value="operador" ${m.role === "operador" ? "selected" : ""}>Operador</option>
-            <option value="admin" ${m.role === "admin" ? "selected" : ""}>Admin</option>
-          </select>
-        </td>
-        <td>
-          ${m.user_id !== currentUserId ? `<button class="text-button" data-remove-member="${m.id}" style="color:var(--bad)">Remover</button>` : "<span style='color:var(--muted);font-size:0.8rem'>Você</span>"}
-        </td>
-      </tr>
-    `).join("") : "<tr><td colspan='3' class='empty'>Nenhum membro cadastrado.</td></tr>";
+        <td>${protectedOwner ? '<strong>Proprietária / Super Admin</strong>' : `<select data-member-role="${m.id}" ${disabled ? "disabled" : ""}>
+          <option value="consulta" ${m.role === "consulta" ? "selected" : ""}>Consulta</option>
+          <option value="operador" ${m.role === "operador" ? "selected" : ""}>Operador</option>
+          <option value="admin" ${m.role === "admin" ? "selected" : ""}>Administrador Vanguard</option>
+        </select>`}</td>
+        <td><span class="status-pill">${status}</span></td>
+        <td>${m.created_at ? new Date(m.created_at).toLocaleDateString("pt-BR") : "-"}</td>
+        <td>${protectedOwner ? '<span style="color:var(--muted);font-size:.8rem">Protegido</span>' : self ? '<span style="color:var(--muted);font-size:.8rem">Você</span>' : `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">${!m.user_id && m.active !== false ? `<button class="text-button" data-resend-invite="${m.id}" data-email="${escapeHtml(m.email)}">Reenviar convite</button>` : ""}<button class="text-button" data-toggle-member="${m.id}" data-active="${m.active === false ? "false" : "true"}">${m.active === false ? "Ativar" : "Desativar"}</button></div>`}</td>
+      </tr>`;
+    }).join("") : "<tr><td colspan='5' class='empty'>Nenhum membro cadastrado.</td></tr>";
+    const pill = document.getElementById("membersCount");
+    if (pill) pill.textContent = members.length + " membros";
   } catch (e) {
-    container.innerHTML = `<tr><td colspan='3' class='empty'>Erro: ${escapeHtml(e.message)}</td></tr>`;
+    container.innerHTML = `<tr><td colspan='5' class='empty'>Erro: ${escapeHtml(e.message)}</td></tr>`;
   }
+}
+
+async function setMemberActive(memberId, active) {
+  await sbFetch("/rest/v1/vanguard_members?id=eq." + memberId, {
+    method: "PATCH", headers: { "Prefer": "return=minimal" }, body: JSON.stringify({ active })
+  });
+}
+
+async function forceSaveCompanyState() {
+  const data = getPersistedState();
+  await sbFetch("/rest/v1/vanguard_company_state?company=eq.vanguard", {
+    method: "PATCH", headers: { "Prefer": "return=minimal" }, body: JSON.stringify({ data })
+  });
+  try { localStorage.setItem("vanguard_backup", JSON.stringify({ data, savedAt: new Date().toISOString() })); } catch {}
+  showSyncStatus("Dados administrativos salvos");
+}
+
+function clearTestData(selected) {
+  if (selected.includes("billing")) { state.invoices = []; state.billed = []; state.selectedInvoices = []; }
+  if (selected.includes("receivables")) state.receivables = [];
+  if (selected.includes("receipts")) { state.receipts = []; state.receiptAllocations = []; }
+  if (selected.includes("imports")) { state.imports = []; state.rows = []; }
+  if (selected.includes("logs")) state.logs = [];
 }
 // ─────────────────────────────────────────────────────────────
 
@@ -666,7 +1075,7 @@ function formatOriginal(service) {
 }
 
 function formatFx(service) {
-  return service.currency === "BRL" ? "" : `${numberFmt.format(service.fxRate)}${service.fxProfile && service.fxProfile !== "Abertura" ? ` ${service.fxProfile}` : ""}`;
+  return service.currency === "BRL" ? "" : numberFmt.format(service.fxRate);
 }
 
 function bankDetailsHtml(bank = state.bank) {
@@ -1000,31 +1409,46 @@ function getInvoiceNo(invoice) {
 }
 
 function financialStatus(total, received) {
-  const diff = Number((total - received).toFixed(2));
-  if (received <= 0) return "ABERTO";
-  if (diff > 0.009) return "PARCIAL";
-  if (Math.abs(diff) <= 0.009) return "PAGO";
-  return "PAGO_COM_CREDITO";
+  const billed = Number(total || 0);
+  const paid = Number(received || 0);
+  const diff = Number((paid - billed).toFixed(2));
+  if (paid <= 0) return "EM ABERTO";
+  if (Math.abs(diff) <= 0.009) return "RECEBIDO";
+  if (diff > 0) return "RECEBIDO A MAIOR";
+  return "RECEBIDO A MENOR";
 }
 
+// A HBL é a chave primária da conciliação financeira.
+// Não conciliamos automaticamente por cliente, valor ou número da invoice.
 function findInvoiceForReceipt(receipt) {
   const hbl = normalizeKey(receipt.hbl_no);
-  const invoiceNo = normalizeKey(receipt.invoice_no);
-  const payer = normalizeKey(receipt.payer_name);
-  let match = state.invoices.find((invoice) => hbl && normalizeKey(invoice.hbl) === hbl);
-  if (match) return { invoice: match, matchedBy: "HBL" };
-  match = state.invoices.find((invoice) => invoiceNo && normalizeKey(getInvoiceNo(invoice)) === invoiceNo);
-  if (match) return { invoice: match, matchedBy: "Invoice" };
-  match = state.invoices.find((invoice) => payer && (normalizeKey(invoice.client).includes(payer) || payer.includes(normalizeKey(invoice.client)) || isSameCompanyName(invoice.client, receipt.payer_name)));
-  if (match) return { invoice: match, matchedBy: "Cliente" };
-  return { invoice: null, matchedBy: "" };
+  if (!hbl) return { invoice: null, matchedBy: "", reason: "HBL_AUSENTE" };
+  const matches = state.invoices.filter((invoice) =>
+    invoice.status === "enviado" && normalizeKey(invoice.hbl) === hbl
+  );
+  if (matches.length === 1) return { invoice: matches[0], matchedBy: "HBL", reason: "" };
+  if (matches.length > 1) return { invoice: null, matchedBy: "", reason: "HBL_DUPLICADA" };
+  return { invoice: null, matchedBy: "", reason: "HBL_NAO_ENCONTRADA" };
 }
 
 function reconcileReceipts() {
   const totals = new Map();
   const allocations = [];
   state.receipts = state.receipts.map((receipt) => {
-    const { invoice, matchedBy } = findInvoiceForReceipt(receipt);
+    // Baixas manuais sem CR permanecem encerradas e não entram na conciliação automática.
+    if (receipt.reconciliation_status === "BAIXADO_MANUALMENTE") return receipt;
+
+    // Vínculos manuais são preservados. O operador escolheu explicitamente o título.
+    let invoice = null;
+    let matchedBy = "";
+    if (receipt.reconciliation_status === "CONCILIADO_MANUAL" && receipt.matched_invoice_id) {
+      invoice = state.invoices.find((item) => getInvoiceNo(item) === receipt.matched_invoice_id) || null;
+      matchedBy = "MANUAL";
+    } else {
+      const match = findInvoiceForReceipt(receipt);
+      invoice = match.invoice;
+      matchedBy = match.matchedBy;
+    }
     if (!invoice) {
       return { ...receipt, reconciliation_status: "NAO_CONCILIADO", matched_invoice_id: "", matched_by: "" };
     }
@@ -1039,7 +1463,7 @@ function reconcileReceipts() {
       amount_allocated: receipt.receipt_amount,
       allocation_date: todayIso()
     });
-    return { ...receipt, reconciliation_status: "CONCILIADO", matched_invoice_id: invoiceId, matched_by: matchedBy };
+    return { ...receipt, reconciliation_status: matchedBy === "MANUAL" ? "CONCILIADO_MANUAL" : "CONCILIADO", matched_invoice_id: invoiceId, matched_by: matchedBy };
   });
 
   state.receiptAllocations = allocations;
@@ -1109,6 +1533,11 @@ function consolidateInvoices() {
       clientEmail: previousInvoice.clientEmail || rowEmail,
       billedBy: previousInvoice.billedBy || "",
       nfse: previousInvoice.nfse || [],
+      // Preserve the origin of manually created documents across every
+      // reconsolidation/render. Without these flags the Invoice remained in
+      // the Invoices tab, but disappeared from "Documentos manuais".
+      manual: Boolean(previousInvoice.manual || unique.some((row) => row.manual)),
+      nfseOnly: Boolean(previousInvoice.nfseOnly || unique.some((row) => row.nfseOnly)),
       services,
       total: services.reduce((sum, service) => sum + service.brlValue, 0),
       category: "Faturamento COMEX",
@@ -1120,21 +1549,36 @@ function consolidateInvoices() {
 
   reconcileReceipts();
 
-  state.receivables = state.invoices.map((invoice) => ({
-    id: `AR-${invoice.hbl}`,
-    client: invoice.client,
-    hbl: invoice.hbl,
-    invoiceNo: invoice.hbl,
-    value: invoice.total,
-    issueDate: invoice.issueDate,
-    dueDate: invoice.dueDate,
-    category: invoice.category || "Faturamento COMEX",
-    costCenter: invoice.costCenter || "Operação COMEX",
-    receivedAmount: invoice.receivedAmount || 0,
-    openBalance: invoice.openBalance ?? invoice.total,
-    financialStatus: invoice.financialStatus || "ABERTO",
-    status: invoice.financialStatus === "PAGO" || invoice.financialStatus === "PAGO_COM_CREDITO" ? "baixado" : invoice.status === "enviado" ? "faturado" : "pendente"
-  }));
+  // Contas a Receber nasce somente após o faturamento/envio concluído.
+  // Preserva dados financeiros já conciliados e vincula documentos pela HBL.
+  const previousReceivables = new Map((state.receivables || []).map((item) => [normalizeKey(item.hbl), item]));
+  const standaloneNfseReceivables = (state.receivables || []).filter((item) => item.source === "nfse");
+  const invoiceReceivables = state.invoices
+    .filter((invoice) => invoice.status === "enviado" || state.billed.some((item) => normalizeKey(item.hbl) === normalizeKey(invoice.hbl)))
+    .map((invoice) => {
+      const previous = previousReceivables.get(normalizeKey(invoice.hbl)) || {};
+      const billed = state.billed.find((item) => normalizeKey(item.hbl) === normalizeKey(invoice.hbl));
+      const receivedAmount = Number(invoice.receivedAmount || 0);
+      const difference = receivedAmount > 0 ? Number((receivedAmount - invoice.total).toFixed(2)) : 0;
+      return {
+        id: `AR-${invoice.hbl}`,
+        client: invoice.client,
+        hbl: invoice.hbl,
+        invoiceNo: getInvoiceNo(invoice),
+        value: invoice.total,
+        issueDate: invoice.issueDate,
+        billedDate: previous.billedDate || billed?.billedDate || todayIso(),
+        dueDate: invoice.dueDate,
+        category: invoice.category || "Faturamento COMEX",
+        costCenter: invoice.costCenter || "Operação COMEX",
+        receivedAmount,
+        difference,
+        openBalance: Math.max(0, Number((invoice.total - receivedAmount).toFixed(2))),
+        financialStatus: financialStatus(invoice.total, receivedAmount),
+        status: "faturado"
+      };
+    });
+  state.receivables = [...invoiceReceivables, ...standaloneNfseReceivables];
 
   save();
 }
@@ -1300,12 +1744,19 @@ function getFilteredReceivables() {
     .filter((item) => {
       const matchesHbl = !hbl || normalizeKey(`${item.hbl} ${item.invoiceNo}`).includes(hbl);
       const matchesClient = !client || normalizeKey(item.client).includes(client);
-      const matchesFrom = !state.receivableDateFrom || item.issueDate >= state.receivableDateFrom;
-      const matchesTo = !state.receivableDateTo || item.issueDate <= state.receivableDateTo;
+      const filterDate = item.billedDate || item.issueDate;
+      const matchesFrom = !state.receivableDateFrom || filterDate >= state.receivableDateFrom;
+      const matchesTo = !state.receivableDateTo || filterDate <= state.receivableDateTo;
       return matchesHbl && matchesClient && matchesFrom && matchesTo;
     })
     .slice()
-    .sort((a, b) => String(a.dueDate).localeCompare(String(b.dueDate)));
+    .sort((a, b) => {
+      const byIssue = String(b.issueDate || "").localeCompare(String(a.issueDate || ""));
+      if (byIssue) return byIssue;
+      const byBilled = String(b.billedDate || "").localeCompare(String(a.billedDate || ""));
+      if (byBilled) return byBilled;
+      return String(a.hbl || "").localeCompare(String(b.hbl || ""));
+    });
 }
 
 function getFilteredReceipts() {
@@ -1494,6 +1945,57 @@ function renderClients() {
       </td>
     </tr>
   `).join("");
+}
+
+
+
+function seedMasterDataFromOperation() {
+  state.masterClients ||= [];
+  state.servicesCatalog ||= [];
+  const clientKeys = new Set(state.masterClients.map(c => normalizeKey((c.cnpj && c.cnpj !== "Não informado") ? c.cnpj : c.name)));
+  const sourceClients = [];
+  (state.rows || []).forEach(r => sourceClients.push({name:r.cliente, cnpj:r.cnpj, email:r.client_email || ""}));
+  (state.invoices || []).forEach(i => sourceClients.push({name:i.client, cnpj:i.cnpj, email:i.clientEmail || ""}));
+  (state.clients || []).forEach(c => sourceClients.push({name:c.name, cnpj:c.cnpj, email:"", dueDays:c.dueDays}));
+  sourceClients.forEach((c, i) => {
+    if (!c.name) return;
+    const key = normalizeKey((c.cnpj && c.cnpj !== "Não informado") ? c.cnpj : c.name);
+    if (!key || clientKeys.has(key)) return;
+    state.masterClients.push({id:`AUTO-CLI-${Date.now()}-${i}`,code:"",name:c.name,tradeName:"",cnpj:c.cnpj || "Não informado",municipalRegistration:"",stateRegistration:"",email:c.email || "",phone:"",address:"",city:"",uf:"",cep:"",dueDays:Number(c.dueDays || 7),status:"ativo",origin:"operacao"});
+    clientKeys.add(key);
+  });
+  const svcKeys = new Set(state.servicesCatalog.map(s => normalizeKey(s.name)));
+  const sourceServices=[];
+  (state.rows || []).forEach(r => sourceServices.push(r.service_description));
+  (state.invoices || []).forEach(i => (i.services || []).forEach(s => sourceServices.push(s.service_description)));
+  sourceServices.filter(Boolean).forEach((name,i)=>{
+    const key=normalizeKey(name); if(!key || svcKeys.has(key)) return;
+    const fiscal = Object.values(typeof NFSE_SERVICOS !== "undefined" ? NFSE_SERVICOS : {}).find(x => normalizeKey(x.descricao_base || "").includes(key) || key.includes(normalizeKey(x.descricao_base || "")));
+    state.servicesCatalog.push({id:`AUTO-SRV-${Date.now()}-${i}`,code:"",name,invoiceDescription:name,nfseDescription:name,municipalCode:fiscal?.codigo_tributario_municipio || "",nbs:"",iss:3,status:"ativo",origin:"invoices"});
+    svcKeys.add(key);
+  });
+}
+
+function renderMasterClients() {
+  const body = document.getElementById("masterClientsTable");
+  if (!body) return;
+  body.innerHTML = (state.masterClients || []).map((client) => `
+    <tr>
+      <td>${escapeHtml(client.code || "-")}</td><td>${escapeHtml(client.name || "")}</td><td>${escapeHtml(client.tradeName || "-")}</td>
+      <td>${escapeHtml(client.cnpj || "-")}</td><td>${escapeHtml(client.email || "-")}</td><td>${escapeHtml(client.city || "-")}/${escapeHtml(client.uf || "-")}</td>
+      <td>${escapeHtml(String(client.dueDays || 7))} dias</td><td>${escapeHtml(client.status || "ativo")}</td>
+      <td><button class="text-button" data-edit-master-client="${escapeHtml(client.id)}">Editar</button><button class="text-button" data-delete-master-client="${escapeHtml(client.id)}">Excluir</button></td>
+    </tr>`).join("") || `<tr><td colspan="9" class="empty">Nenhum cliente cadastrado.</td></tr>`;
+}
+
+function renderServicesCatalog() {
+  const body = document.getElementById("servicesCatalogTable");
+  if (!body) return;
+  body.innerHTML = (state.servicesCatalog || []).map((service) => `
+    <tr><td>${escapeHtml(service.code || "-")}</td><td>${escapeHtml(service.name || "")}</td><td>${escapeHtml(service.invoiceDescription || "-")}</td>
+    <td>${escapeHtml(service.nfseDescription || "-")}</td><td>${escapeHtml(service.municipalCode || "-")}</td><td>${escapeHtml(service.nbs || "-")}</td>
+    <td>${numberFmt.format(Number(service.iss || 0))}%</td><td>${escapeHtml(service.status || "ativo")}</td>
+    <td><button class="text-button" data-edit-service="${escapeHtml(service.id)}">Editar</button><button class="text-button" data-delete-service="${escapeHtml(service.id)}">Excluir</button></td></tr>`).join("") || `<tr><td colspan="9" class="empty">Nenhum serviço cadastrado.</td></tr>`;
 }
 
 function renderRates() {
@@ -1783,16 +2285,18 @@ function renderBank() {
   document.getElementById("bankTaxId").value = state.bank.taxId || "";
   document.getElementById("bankPix").value = state.bank.pix || "";
   document.getElementById("bankInstructions").value = state.bank.instructions || "";
-  document.getElementById("billingUserEmail").value = state.billingUserEmail || "";
+  document.getElementById("billingUserEmail").value = currentUserEmail || "";
 }
 
 function renderEmailConfig() {
   document.getElementById("emailCompany").value = state.emailConfig.company || "";
-  document.getElementById("emailFrom").value = state.emailConfig.fromEmail || "";
-  document.getElementById("smtpUser").value = state.emailConfig.smtpUser || "";
-  document.getElementById("smtpPass").value = state.emailConfig.smtpPass || "";
-  document.getElementById("smtpHost").value = state.emailConfig.smtpHost || "smtp.gmail.com";
-  document.getElementById("smtpPort").value = state.emailConfig.smtpPort || 587;
+  document.getElementById("emailFrom").value = currentUserEmail || "";
+  const providerStatus = document.getElementById("emailProviderStatus");
+  if (providerStatus) providerStatus.value = currentUserEmail.endsWith("@gmail.com") ? "Gmail (teste)" : "Microsoft 365";
+  document.getElementById("smtpUser").value = "";
+  document.getElementById("smtpPass").value = "";
+  document.getElementById("smtpHost").value = "";
+  document.getElementById("smtpPort").value = 587;
   document.getElementById("emailSubject").value = state.emailConfig.subject || "";
   document.getElementById("emailBody").value = state.emailConfig.body || "";
 }
@@ -1839,16 +2343,20 @@ function renderReceivables() {
         <td>${escapeHtml(item.invoiceNo)}</td>
         <td>${brl.format(item.value)}</td>
         <td>${brl.format(item.receivedAmount || 0)}</td>
+        <td>${brl.format(item.difference || 0)}</td>
         <td>${brl.format(item.openBalance ?? item.value)}</td>
         <td>${formatDate(item.issueDate)}</td>
         <td>${formatDate(item.dueDate)}</td>
         <td>${escapeHtml(item.category)}</td>
         <td>${escapeHtml(item.costCenter)}</td>
-        <td>${escapeHtml(item.financialStatus || "ABERTO")}</td>
-        <td><button class="text-button" data-view-receivable="${escapeHtml(item.hbl)}">Visualizar invoice</button></td>
+        <td>${escapeHtml(item.financialStatus || "EM ABERTO")}</td>
+        <td>
+          <button class="text-button" data-view-receivable="${escapeHtml(item.hbl)}">Invoice</button>
+          <button class="text-button" data-view-nfse-receivable="${escapeHtml(item.hbl)}">${(state.invoices.find(inv => inv.hbl === item.hbl)?.nfse || []).length ? "NFS-e" : "NFS-e pendente"}</button>
+        </td>
       </tr>
     `).join("")
-    : `<tr><td colspan="12" class="empty">Nenhum título encontrado.</td></tr>`;
+    : `<tr><td colspan="13" class="empty">Nenhum título encontrado.</td></tr>`;
 }
 
 function receiptInvoice(receipt) {
@@ -1857,7 +2365,52 @@ function receiptInvoice(receipt) {
 
 function receiptFinancialStatus(receipt) {
   if (receipt.reconciliation_status === "NAO_CONCILIADO") return "NAO_CONCILIADO";
+  if (receipt.reconciliation_status === "BAIXADO_MANUALMENTE") return "BAIXADO_MANUALMENTE";
   return receiptInvoice(receipt)?.financialStatus || "ABERTO";
+}
+
+function manuallyReconcileReceipt(receiptId) {
+  const receipt = state.receipts.find((item) => item.id === receiptId);
+  if (!receipt) return;
+  const hbl = window.prompt("Informe a HBL/Invoice do Contas a Receber que deve receber esta baixa:", receipt.hbl_no || "");
+  if (hbl === null) return;
+  const key = normalizeKey(hbl);
+  const matches = state.invoices.filter((invoice) =>
+    (invoice.status === "enviado" || state.billed.some((item) => normalizeKey(item.hbl) === normalizeKey(invoice.hbl))) &&
+    (normalizeKey(invoice.hbl) === key || normalizeKey(getInvoiceNo(invoice)) === key)
+  );
+  if (matches.length !== 1) {
+    window.alert(matches.length > 1 ? "Mais de um título foi localizado. Revise a HBL informada." : "Nenhum Contas a Receber faturado foi localizado para essa HBL/Invoice.");
+    return;
+  }
+  const invoice = matches[0];
+  if (!window.confirm(`Confirmar baixa do recibo ${receipt.receipt_no} (${brl.format(receipt.receipt_amount)}) no título ${invoice.hbl} (${brl.format(invoice.total)})?`)) return;
+  receipt.reconciliation_status = "CONCILIADO_MANUAL";
+  receipt.matched_invoice_id = getInvoiceNo(invoice);
+  receipt.matched_by = "MANUAL";
+  receipt.manual_reconciled_at = new Date().toISOString();
+  receipt.manual_reconciled_by = currentUserEmail || "operador";
+  addLog("success", `Recebimento ${receipt.receipt_no} conciliado manualmente`, `HBL ${invoice.hbl} · ${brl.format(receipt.receipt_amount)} · Operador: ${currentUserEmail || "-"}`);
+  reconcileReceipts();
+  render();
+}
+
+function manuallyCloseReceipt(receiptId) {
+  const receipt = state.receipts.find((item) => item.id === receiptId);
+  if (!receipt) return;
+  const reason = window.prompt("Informe o motivo da baixa sem Contas a Receber:", "");
+  if (reason === null) return;
+  if (!reason.trim()) { window.alert("A justificativa é obrigatória para baixa sem Contas a Receber."); return; }
+  if (!window.confirm(`Baixar o recibo ${receipt.receipt_no} sem vincular a um Contas a Receber?`)) return;
+  receipt.reconciliation_status = "BAIXADO_MANUALMENTE";
+  receipt.manual_close_reason = reason.trim();
+  receipt.manual_closed_at = new Date().toISOString();
+  receipt.manual_closed_by = currentUserEmail || "operador";
+  receipt.matched_invoice_id = "";
+  receipt.matched_by = "MANUAL_SEM_CR";
+  addLog("warning", `Recebimento ${receipt.receipt_no} baixado manualmente`, `${brl.format(receipt.receipt_amount)} · Motivo: ${reason.trim()} · Operador: ${currentUserEmail || "-"}`);
+  reconcileReceipts();
+  render();
 }
 
 function renderReceiptDetail(receiptId = state.activeReceiptId) {
@@ -1901,8 +2454,11 @@ function renderReceipts() {
         <td>${brl.format(receipt.receipt_amount)}</td>
         <td>${formatDate(receipt.posted_date)}</td>
         <td>${escapeHtml(receipt.bank_account || "-")}</td>
-        <td><span class="chip ${status === "NAO_CONCILIADO" ? "bad" : status === "PARCIAL" ? "warn" : "ok"}">${status}</span></td>
-        <td><button class="text-button" data-view-receipt="${escapeHtml(receipt.id)}">Conciliação</button></td>
+        <td><span class="chip ${status === "NAO_CONCILIADO" ? "bad" : status === "BAIXADO_MANUALMENTE" ? "warn" : "ok"}">${status}</span></td>
+        <td>
+          <button class="text-button" data-view-receipt="${escapeHtml(receipt.id)}">Visualizar</button>
+          ${receipt.reconciliation_status === "NAO_CONCILIADO" ? `<button class="text-button" data-reconcile-receipt="${escapeHtml(receipt.id)}">Conciliar / Baixar</button><button class="text-button" data-close-receipt="${escapeHtml(receipt.id)}">Baixar sem CR</button>` : ""}
+        </td>
       </tr>
     `).join("")
     : `<tr><td colspan="9" class="empty">Nenhum recebimento encontrado.</td></tr>`;
@@ -1915,6 +2471,8 @@ function render() {
   renderImports();
   renderInvoices();
   renderClients();
+  renderMasterClients();
+  renderServicesCatalog();
   renderRates();
   renderBank();
   renderBilled();
@@ -1922,6 +2480,10 @@ function render() {
   renderReceipts();
   renderEmailConfig();
   renderAudit();
+  if (window.renderManualDocuments) window.renderManualDocuments();
+  // Reaplica permissões depois de cada renderização. Administrador Vanguard
+  // deve visualizar E-mail, Usuários e Acessos e Administração de Dados.
+  applyRoleRestrictions();
 }
 
 document.querySelectorAll(".nav-item").forEach((button) => {
@@ -2037,9 +2599,19 @@ document.getElementById("receivableDateTo").addEventListener("change", (event) =
 document.getElementById("receivablesTable").addEventListener("click", (event) => {
   const hbl = event.target.dataset.viewReceivable;
   if (hbl) openInvoicePreview(hbl);
+
+  const nfseHbl = event.target.dataset.viewNfseReceivable;
+  if (nfseHbl) {
+    const invoice = state.invoices.find((item) => item.hbl === nfseHbl);
+    if (!invoice) return;
+    if (invoice.nfse && invoice.nfse.length > 0) renderNfseStatusModal(invoice);
+    else renderNfseModal(invoice);
+  }
 });
 
 document.getElementById("exportReceivablesReport").addEventListener("click", exportReceivablesReport);
+document.getElementById("exportInvoicesReport")?.addEventListener("click", exportInvoicesReport);
+document.getElementById("exportBilledReport")?.addEventListener("click", exportBilledReport);
 
 document.getElementById("receiptFileInput").addEventListener("change", (event) => {
   [...event.target.files].forEach(readReceiptFile);
@@ -2072,6 +2644,10 @@ document.getElementById("receiptDropzone").addEventListener("drop", (event) => [
 });
 
 document.getElementById("receiptsTable").addEventListener("click", (event) => {
+  const reconcileId = event.target.dataset.reconcileReceipt;
+  if (reconcileId) { manuallyReconcileReceipt(reconcileId); return; }
+  const closeId = event.target.dataset.closeReceipt;
+  if (closeId) { manuallyCloseReceipt(closeId); return; }
   const receiptId = event.target.dataset.viewReceipt;
   if (!receiptId) return;
   state.activeReceiptId = receiptId;
@@ -2081,9 +2657,8 @@ document.getElementById("receiptsTable").addEventListener("click", (event) => {
 
 document.getElementById("exportReceiptsReport").addEventListener("click", exportReceiptsReport);
 
-document.getElementById("billingUserEmail").addEventListener("input", (event) => {
-  state.billingUserEmail = event.target.value.trim();
-  save();
+document.getElementById("billingUserEmail").addEventListener("input", () => {
+  document.getElementById("billingUserEmail").value = currentUserEmail || "";
 });
 
 document.getElementById("saveBankData").addEventListener("click", () => {
@@ -2103,19 +2678,18 @@ document.getElementById("saveBankData").addEventListener("click", () => {
 
 document.getElementById("saveEmailConfig").addEventListener("click", () => {
   state.emailConfig = {
+    ...state.emailConfig,
     company: document.getElementById("emailCompany").value.trim(),
-    fromEmail: document.getElementById("emailFrom").value.trim(),
-    smtpUser: document.getElementById("smtpUser").value.trim(),
-    smtpPass: document.getElementById("smtpPass").value,
-    smtpHost: document.getElementById("smtpHost").value.trim(),
-    smtpPort: Number(document.getElementById("smtpPort").value || 587),
+    fromEmail: "",
+    smtpUser: "",
+    smtpPass: "",
+    smtpHost: "",
+    smtpPort: 587,
     subject: document.getElementById("emailSubject").value,
     body: document.getElementById("emailBody").value
   };
-  if (!state.billingUserEmail && state.emailConfig.fromEmail) {
-    state.billingUserEmail = state.emailConfig.fromEmail;
-  }
-  addLog("success", "Configuração de e-mail salva", `${state.emailConfig.smtpHost}:${state.emailConfig.smtpPort}`);
+  state.billingUserEmail = "";
+  addLog("success", "Template de e-mail salvo", `Conta de envio vinculada ao usuário logado: ${currentUserEmail}`);
   save();
   render();
 });
@@ -2231,6 +2805,48 @@ document.getElementById("deleteSelectedClients").addEventListener("click", () =>
   askUpdateInvoicesFromDailyTable("Clientes especiais selecionados foram excluídos.");
 });
 
+
+const saveMasterClientBtn = document.getElementById("saveMasterClient");
+if (saveMasterClientBtn) saveMasterClientBtn.addEventListener("click", () => {
+  const id = document.getElementById("masterClientId").value || `CLI-${Date.now()}`;
+  const client = {
+    id, code: document.getElementById("masterClientCode").value.trim(), name: document.getElementById("masterClientName").value.trim(),
+    tradeName: document.getElementById("masterClientTradeName").value.trim(), cnpj: document.getElementById("masterClientCnpj").value.trim(),
+    municipalRegistration: document.getElementById("masterClientIM").value.trim(), stateRegistration: document.getElementById("masterClientIE").value.trim(),
+    email: document.getElementById("masterClientEmail").value.trim(), phone: document.getElementById("masterClientPhone").value.trim(),
+    address: document.getElementById("masterClientAddress").value.trim(), city: document.getElementById("masterClientCity").value.trim(),
+    uf: document.getElementById("masterClientUf").value.trim().toUpperCase(), cep: document.getElementById("masterClientCep").value.trim(),
+    dueDays: Number(document.getElementById("masterClientDue").value || 7), status: document.getElementById("masterClientStatus").value
+  };
+  if (!client.name) { addLog("error", "Cliente não salvo", "Informe a Razão Social."); render(); return; }
+  state.masterClients ||= [];
+  state.masterClients = state.masterClients.filter((x) => x.id !== id);
+  state.masterClients.push(client);
+  ["masterClientId","masterClientCode","masterClientName","masterClientTradeName","masterClientCnpj","masterClientIM","masterClientIE","masterClientEmail","masterClientPhone","masterClientAddress","masterClientCity","masterClientUf","masterClientCep"].forEach(x => document.getElementById(x).value="");
+  document.getElementById("masterClientDue").value=7; document.getElementById("masterClientStatus").value="ativo";
+  addLog("success", "Cadastro de cliente salvo", client.name); render();
+});
+const masterTable=document.getElementById("masterClientsTable");
+if (masterTable) masterTable.addEventListener("click", (event) => {
+  const edit=event.target.dataset.editMasterClient, del=event.target.dataset.deleteMasterClient;
+  if (del) { const c=state.masterClients.find(x=>x.id===del); if(c && confirm(`Excluir ${c.name}?`)){state.masterClients=state.masterClients.filter(x=>x.id!==del); addLog("success","Cliente excluído",c.name); render();} return; }
+  if (!edit) return; const c=state.masterClients.find(x=>x.id===edit); if(!c)return;
+  const map={masterClientId:'id',masterClientCode:'code',masterClientName:'name',masterClientTradeName:'tradeName',masterClientCnpj:'cnpj',masterClientIM:'municipalRegistration',masterClientIE:'stateRegistration',masterClientEmail:'email',masterClientPhone:'phone',masterClientAddress:'address',masterClientCity:'city',masterClientUf:'uf',masterClientCep:'cep',masterClientDue:'dueDays',masterClientStatus:'status'};
+  Object.entries(map).forEach(([el,key])=>document.getElementById(el).value=c[key]??'');
+});
+
+const saveServiceBtn=document.getElementById("saveServiceCatalog");
+if (saveServiceBtn) saveServiceBtn.addEventListener("click", () => {
+  const id=document.getElementById("serviceCatalogId").value || `SRV-${Date.now()}`;
+  const service={id,code:document.getElementById("serviceCode").value.trim(),name:document.getElementById("serviceName").value.trim(),invoiceDescription:document.getElementById("serviceInvoiceDescription").value.trim(),nfseDescription:document.getElementById("serviceNfseDescription").value.trim(),municipalCode:document.getElementById("serviceMunicipalCode").value.trim(),nbs:document.getElementById("serviceNbs").value.trim(),iss:Number(document.getElementById("serviceIss").value||0),status:document.getElementById("serviceStatus").value};
+  if(!service.name){addLog("error","Serviço não salvo","Informe o nome do serviço.");render();return;}
+  state.servicesCatalog ||= []; state.servicesCatalog=state.servicesCatalog.filter(x=>x.id!==id); state.servicesCatalog.push(service);
+  ["serviceCatalogId","serviceCode","serviceName","serviceInvoiceDescription","serviceNfseDescription","serviceMunicipalCode","serviceNbs"].forEach(x=>document.getElementById(x).value=""); document.getElementById("serviceIss").value=0; document.getElementById("serviceStatus").value="ativo";
+  addLog("success","Serviço cadastrado",service.name); render();
+});
+const serviceTable=document.getElementById("servicesCatalogTable");
+if(serviceTable) serviceTable.addEventListener("click",(event)=>{const edit=event.target.dataset.editService,del=event.target.dataset.deleteService;if(del){const x=state.servicesCatalog.find(s=>s.id===del);if(x&&confirm(`Excluir ${x.name}?`)){state.servicesCatalog=state.servicesCatalog.filter(s=>s.id!==del);addLog("success","Serviço excluído",x.name);render();}return;}if(!edit)return;const x=state.servicesCatalog.find(s=>s.id===edit);if(!x)return;const map={serviceCatalogId:'id',serviceCode:'code',serviceName:'name',serviceInvoiceDescription:'invoiceDescription',serviceNfseDescription:'nfseDescription',serviceMunicipalCode:'municipalCode',serviceNbs:'nbs',serviceIss:'iss',serviceStatus:'status'};Object.entries(map).forEach(([el,key])=>document.getElementById(el).value=x[key]??'');});
+
 document.getElementById("addRate").addEventListener("click", () => {
   const rate = {
     currency: document.getElementById("rateCurrency").value,
@@ -2279,33 +2895,38 @@ document.getElementById("fxTableInput").addEventListener("change", (event) => {
   if (file) importFxTable(file);
 });
 
-document.getElementById("addManualInvoice").addEventListener("click", async () => {
-  const hbl = document.getElementById("manualHbl").value.trim() || `MANUAL-${Date.now()}`;
-  const row = {
-    hbl_no: hbl,
-    cliente: document.getElementById("manualClient").value.trim(),
-    cnpj: document.getElementById("manualCnpj").value.trim() || "Não informado",
-    service_description: document.getElementById("manualService").value.trim(),
-    item_description: document.getElementById("manualItem").value.trim(),
-    calculation_code: "FLAT",
-    entered_amount: Number(document.getElementById("manualAmount").value || 0),
-    entered_curr_total: Number(document.getElementById("manualAmount").value || 0),
-    currency: document.getElementById("manualCurrency").value,
-    issue_date: document.getElementById("manualIssueDate").value || todayIso(),
-    client_email: document.getElementById("manualEmail").value.trim()
-  };
-  if (!row.cliente || !row.service_description || !row.entered_amount) {
-    addLog("error", "Invoice manual incompleta", "Informe cliente, serviço e valor original.");
-    render();
-    return;
-  }
-  await updateRatesForRows([row]);
-  state.rows = state.rows.filter((item) => item.hbl_no !== hbl);
-  state.rows.push(row);
-  addLog("success", `Invoice manual ${hbl} cadastrada`, row.cliente);
-  consolidateInvoices();
-  render();
-});
+document.getElementById("addManualInvoice").addEventListener("click", () => openManualInvoiceModal());
+
+function activeMasterClients() { return (state.masterClients || []).filter(c => (c.status || "ativo") === "ativo").sort((a,b)=>(a.name||"").localeCompare(b.name||"")); }
+function activeCatalogServices() { return (state.servicesCatalog || []).filter(s => (s.status || "ativo") === "ativo").sort((a,b)=>(a.name||"").localeCompare(b.name||"")); }
+
+function openManualInvoiceModal() {
+  seedMasterDataFromOperation();
+  const clients=activeMasterClients(), services=activeCatalogServices();
+  const modal=document.createElement("div"); modal.className="modal-backdrop"; modal.id="manualInvoiceModal";
+  modal.innerHTML=`<div class="modal-card" style="max-width:920px;max-height:92vh;overflow:auto;">
+    <div class="modal-head"><div><p class="eyebrow">Faturamento manual</p><h2>Nova Invoice Manual</h2></div><button class="icon-button" id="closeManualInvoice">✕</button></div>
+    <div class="form-grid">
+      <label>HBL *<input id="miHbl" placeholder="HBL obrigatória" /></label>
+      <label>Cliente *<select id="miClient"><option value="">Selecione...</option>${clients.map(c=>`<option value="${escapeHtml(c.id)}">${escapeHtml(c.name)}${c.cnpj?` — ${escapeHtml(c.cnpj)}`:""}</option>`).join("")}</select></label>
+      <label>CNPJ<input id="miCnpj" readonly /></label><label>E-mail faturamento<input id="miEmail" type="email" /></label>
+      <label>Data emissão<input id="miIssueDate" type="date" value="${todayIso()}" /></label><label>Vencimento<input id="miDueDate" type="date" /></label>
+    </div>
+    <div class="panel-head" style="margin-top:16px;"><h3>Serviços</h3><button class="text-button" id="miAddService">+ Adicionar serviço</button></div>
+    <div id="miServices"></div>
+    <div id="miError" style="display:none;color:var(--bad);margin-top:10px;"></div>
+    <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:18px;"><button class="text-button" id="miCancel">Cancelar</button><button class="primary-button" id="miSave">Criar Invoice</button></div>
+  </div>`; document.body.appendChild(modal);
+  const close=()=>modal.remove(); modal.querySelector('#closeManualInvoice').onclick=close; modal.querySelector('#miCancel').onclick=close;
+  const clientSel=modal.querySelector('#miClient');
+  clientSel.onchange=()=>{const c=clients.find(x=>x.id===clientSel.value); if(!c)return; modal.querySelector('#miCnpj').value=c.cnpj||"Não informado"; modal.querySelector('#miEmail').value=c.email||""; const d=new Date(); d.setDate(d.getDate()+Number(c.dueDays||7)); modal.querySelector('#miDueDate').value=d.toISOString().slice(0,10);};
+  const addLine=()=>{const row=document.createElement('div');row.className='form-grid';row.style='border-top:1px solid var(--line);padding-top:12px;margin-top:8px;';row.innerHTML=`<label>Serviço *<select class="miSvc"><option value="">Selecione...</option>${services.map(s=>`<option value="${escapeHtml(s.id)}">${escapeHtml(s.name)}</option>`).join("")}</select></label><label>Descrição<input class="miDesc" /></label><label>Moeda<select class="miCurrency"><option>BRL</option><option>USD</option><option>EUR</option><option>GBP</option><option>CAD</option><option>JPY</option></select></label><label>Valor original *<input class="miAmount" type="number" min="0" step="0.01" /></label><label>Item/Referência<input class="miItem" /></label><label>Ação<button type="button" class="text-button miRemove">Remover</button></label>`; modal.querySelector('#miServices').appendChild(row); const sel=row.querySelector('.miSvc');sel.onchange=()=>{const s=services.find(x=>x.id===sel.value);row.querySelector('.miDesc').value=s?.invoiceDescription||s?.name||"";};row.querySelector('.miRemove').onclick=()=>row.remove();};
+  modal.querySelector('#miAddService').onclick=addLine; addLine();
+  modal.querySelector('#miSave').onclick=async()=>{const hbl=modal.querySelector('#miHbl').value.trim(), c=clients.find(x=>x.id===clientSel.value), err=modal.querySelector('#miError'); const lines=[...modal.querySelectorAll('#miServices .form-grid')];
+    if(!hbl){err.style.display='block';err.textContent='Informe a HBL. Esta informação é obrigatória para criação da Invoice.';return;} if(!c){err.style.display='block';err.textContent='Selecione um cliente cadastrado.';return;} if((state.invoices||[]).some(i=>normalizeKey(i.hbl)===normalizeKey(hbl))){err.style.display='block';err.textContent='Já existe uma Invoice com esta HBL.';return;}
+    const rows=[]; for(const line of lines){const svc=services.find(x=>x.id===line.querySelector('.miSvc').value), amount=Number(line.querySelector('.miAmount').value||0);if(!svc||amount<=0)continue;rows.push({hbl_no:hbl,cliente:c.name,cnpj:c.cnpj||'Não informado',service_description:line.querySelector('.miDesc').value.trim()||svc.name,item_description:line.querySelector('.miItem').value.trim(),calculation_code:'FLAT',entered_amount:amount,entered_curr_total:amount,currency:line.querySelector('.miCurrency').value,issue_date:modal.querySelector('#miIssueDate').value||todayIso(),client_email:modal.querySelector('#miEmail').value.trim(),manual:true});}
+    if(!rows.length){err.style.display='block';err.textContent='Adicione ao menos um serviço com valor.';return;} await updateRatesForRows(rows); state.rows.push(...rows); consolidateInvoices(); const inv=state.invoices.find(i=>i.hbl===hbl);if(inv){inv.manual=true;inv.dueDate=modal.querySelector('#miDueDate').value||inv.dueDate;inv.clientEmail=modal.querySelector('#miEmail').value.trim();} addLog('success',`Invoice manual ${hbl} criada`,`${c.name} · ${rows.length} serviço(s)`);save();render();close();};
+}
 
 document.getElementById("simulateBacen").addEventListener("click", () => {
   const date = document.getElementById("rateDate").value || todayIso();
@@ -2350,12 +2971,31 @@ function registerBilled(invoice, mode = "simulado") {
     sentAt: invoice.sentAt,
     mode
   });
-  const receivable = state.receivables.find((item) => item.hbl === invoice.hbl);
-  if (receivable) {
-    receivable.status = "faturado";
-    receivable.value = invoice.total;
-    receivable.dueDate = invoice.dueDate;
-  }
+  const billedDate = todayIso();
+  const billedItem = state.billed.find((item) => item.hbl === invoice.hbl);
+  if (billedItem) billedItem.billedDate = billedDate;
+
+  const receivedAmount = Number(invoice.receivedAmount || 0);
+  const receivableData = {
+    id: `AR-${invoice.hbl}`,
+    client: invoice.client,
+    hbl: invoice.hbl,
+    invoiceNo: getInvoiceNo(invoice),
+    value: invoice.total,
+    issueDate: invoice.issueDate,
+    billedDate,
+    dueDate: invoice.dueDate,
+    category: invoice.category || "Faturamento COMEX",
+    costCenter: invoice.costCenter || "Operação COMEX",
+    receivedAmount,
+    difference: receivedAmount > 0 ? Number((receivedAmount - invoice.total).toFixed(2)) : 0,
+    openBalance: Math.max(0, Number((invoice.total - receivedAmount).toFixed(2))),
+    financialStatus: financialStatus(invoice.total, receivedAmount),
+    status: "faturado"
+  };
+  const index = state.receivables.findIndex((item) => normalizeKey(item.hbl) === normalizeKey(invoice.hbl));
+  if (index >= 0) state.receivables[index] = { ...state.receivables[index], ...receivableData };
+  else state.receivables.push(receivableData);
 }
 
 function renderTemplate(template, invoice) {
@@ -2370,35 +3010,29 @@ function renderTemplate(template, invoice) {
 }
 
 async function sendInvoiceByEmail(invoice) {
-  if (!state.emailConfig.smtpHost || !state.emailConfig.smtpUser || !state.emailConfig.smtpPass || !state.emailConfig.fromEmail) {
-    throw new Error("Configuração SMTP incompleta na aba E-mail.");
+  if (!currentUserEmail || !authToken) {
+    throw new Error("Usuário autenticado não identificado. Faça login novamente.");
   }
   if (!window.jspdf?.jsPDF) throw new Error("Biblioteca de PDF não carregada.");
-  const doc = await buildInvoicePdf(invoice);
+  // O PDF enviado ao cliente representa uma invoice faturada.
+  // O status técnico interno (erro/enviado/etc.) permanece no sistema e na auditoria.
+  const invoiceForPdf = { ...invoice, status: "faturada" };
+  const doc = await buildInvoicePdf(invoiceForPdf);
   if (!doc) throw new Error("Não foi possível gerar o PDF.");
-  // Envio SMTP via backend externo — não disponível no modo Supabase.
-  // Para ativar envio real de e-mail, configure um Supabase Edge Function
-  // ou utilize um serviço como Resend / SendGrid apontado por uma Edge Function.
-  throw new Error(
-    "Envio automático de e-mail requer uma Edge Function Supabase ou backend externo. " +
-    "Por enquanto baixe o PDF e envie manualmente, ou configure uma Edge Function."
-  );
-  // eslint-disable-next-line no-unreachable
+
   const pdfBase64 = doc.output("datauristring").split(",")[1];
   const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), 25000);
+  const timeout = window.setTimeout(() => controller.abort(), 30000);
+
   const response = await fetch(SUPABASE_URL + "/functions/v1/send-invoice", {
     method: "POST",
-    headers: { "Content-Type": "application/json", "Authorization": "Bearer " + authToken },
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": "Bearer " + authToken
+    },
     signal: controller.signal,
     body: JSON.stringify({
-      smtp: {
-        host: state.emailConfig.smtpHost,
-        port: state.emailConfig.smtpPort,
-        user: state.emailConfig.smtpUser,
-        password: state.emailConfig.smtpPass,
-        fromEmail: state.emailConfig.fromEmail
-      },
+      to: invoice.clientEmail,
       invoice,
       subject: renderTemplate(state.emailConfig.subject, invoice),
       body: renderTemplate(state.emailConfig.body, invoice),
@@ -2406,10 +3040,11 @@ async function sendInvoiceByEmail(invoice) {
     })
   }).catch((error) => {
     if (error.name === "AbortError") {
-      throw new Error("Tempo limite no envio SMTP. Confira a senha de app do Gmail e tente novamente.");
+      throw new Error("Tempo limite no envio do e-mail. Tente novamente.");
     }
     throw error;
   }).finally(() => window.clearTimeout(timeout));
+
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(payload.detail || payload.error || "Falha no envio do e-mail.");
   return payload;
@@ -2426,14 +3061,10 @@ async function sendInvoice(invoice, options = { showModal: true }) {
     render();
     return false;
   }
-  if (!state.billingUserEmail && state.emailConfig.fromEmail) {
-    state.billingUserEmail = state.emailConfig.fromEmail;
-    save();
-  }
-  if (!state.billingUserEmail) {
+  if (!currentUserEmail || !authToken) {
     invoice.status = "erro";
-    addBillingStep("error", "E-mail do faturamento ausente", "Informe o e-mail da pessoa logada/faturando.");
-    addLog("error", `Invoice ${invoice.hbl} sem e-mail do faturamento`, "Informe o e-mail da pessoa logada/faturando no filtro de invoices.");
+    addBillingStep("error", "Usuário não identificado", "Faça login novamente para faturar.");
+    addLog("error", `Invoice ${invoice.hbl} sem usuário autenticado`, "Sessão de login não identificada.");
     render();
     return false;
   }
@@ -2443,10 +3074,10 @@ async function sendInvoice(invoice, options = { showModal: true }) {
     await sendInvoiceByEmail(invoice);
     invoice.status = "enviado";
     invoice.sentAt = new Date().toLocaleString("pt-BR");
-    invoice.billedBy = state.billingUserEmail;
-    registerBilled(invoice, "SMTP real");
+    invoice.billedBy = currentUserEmail;
+    registerBilled(invoice, "Edge Function");
     addBillingStep("success", "E-mail enviado", `PDF anexado e enviado para ${invoice.clientEmail}.`);
-    addLog("success", `Invoice ${invoice.hbl} enviada por e-mail`, `Enviada para ${invoice.clientEmail} por ${state.emailConfig.fromEmail}.`);
+    addLog("success", `Invoice ${invoice.hbl} enviada por e-mail`, `Enviada para ${invoice.clientEmail} por ${currentUserEmail}.`);
     render();
     return true;
   } catch (error) {
@@ -2697,6 +3328,46 @@ function exportCsv(fileName, headers, rows) {
   triggerDownload(url, fileName);
 }
 
+function exportInvoicesReport() {
+  exportCsv(`invoices-${todayIso()}.csv`, [
+    { label: "HBL", value: (invoice) => invoice.hbl },
+    { label: "Invoice", value: (invoice) => getInvoiceNo(invoice) },
+    { label: "Cliente", value: (invoice) => invoice.client },
+    { label: "CNPJ", value: (invoice) => invoice.cnpj || "" },
+    { label: "Emissão", value: (invoice) => invoice.issueDate || "" },
+    { label: "Vencimento", value: (invoice) => invoice.dueDate || "" },
+    { label: "Valor BRL", value: (invoice) => numberFmt.format(invoice.total || 0) },
+    { label: "Status", value: (invoice) => (["enviado","faturado","faturada"].includes(String(invoice.status || "").toLowerCase()) ? "FATURADA" : String(invoice.status || "PENDENTE").toUpperCase()) }
+  ], (state.invoices || []).slice().sort((a,b)=>String(b.issueDate||"").localeCompare(String(a.issueDate||""))));
+}
+
+function exportBilledReport() {
+  exportCsv(`invoices-faturadas-${todayIso()}.csv`, [
+    { label: "HBL", value: (item) => item.hbl },
+    { label: "Cliente", value: (item) => item.client },
+    { label: "Valor BRL", value: (item) => numberFmt.format(item.total || 0) },
+    { label: "E-mail cliente", value: (item) => item.clientEmail || "" },
+    { label: "Faturado por", value: (item) => item.billedBy || "" },
+    { label: "Data", value: (item) => item.sentAt || "" },
+    { label: "Modo", value: (item) => item.mode || "" }
+  ], (state.billed || []).slice().sort((a,b)=>String(b.billedDate||b.sentAt||"").localeCompare(String(a.billedDate||a.sentAt||""))));
+}
+
+function exportNfseReport() {
+  const rows=[];
+  (state.invoices||[]).forEach(invoice=>(invoice.nfse||[]).forEach(n=>rows.push({invoice,n})));
+  exportCsv(`nfse-${todayIso()}.csv`, [
+    { label: "HBL / Invoice", value: (row) => row.invoice.hbl },
+    { label: "Cliente", value: (row) => row.invoice.client },
+    { label: "Tipo", value: (row) => row.n.tipo || "" },
+    { label: "Valor BRL", value: (row) => numberFmt.format(row.n.valor || 0) },
+    { label: "Nº NFS-e", value: (row) => row.n.numero || "" },
+    { label: "Status", value: (row) => row.n.status || "" },
+    { label: "Emitida em", value: (row) => row.n.emitidaEm || "" },
+    { label: "Referência", value: (row) => row.n.ref || "" }
+  ], rows.sort((a,b)=>String(b.n.emitidaEm||"").localeCompare(String(a.n.emitidaEm||""))));
+}
+
 function exportReceivablesReport() {
   exportCsv(`contas-a-receber-${todayIso()}.csv`, [
     { label: "Cliente", value: (item) => item.client },
@@ -2704,8 +3375,10 @@ function exportReceivablesReport() {
     { label: "Invoice", value: (item) => item.invoiceNo },
     { label: "Valor faturado", value: (item) => numberFmt.format(item.value) },
     { label: "Valor recebido", value: (item) => numberFmt.format(item.receivedAmount || 0) },
+    { label: "Diferenca", value: (item) => numberFmt.format(item.difference || 0) },
     { label: "Saldo", value: (item) => numberFmt.format(item.openBalance ?? item.value) },
     { label: "Emissao", value: (item) => formatDate(item.issueDate) },
+    { label: "Faturamento", value: (item) => formatDate(item.billedDate) },
     { label: "Vencimento", value: (item) => formatDate(item.dueDate) },
     { label: "Categoria financeira", value: (item) => item.category },
     { label: "Centro de custo", value: (item) => item.costCenter },
@@ -2823,7 +3496,7 @@ async function buildInvoicePdf(invoice) {
     { label: "HBL", value: invoice.hbl },
     { label: "EMISSÃO", value: formatDate(invoice.issueDate) },
     { label: "VENCIMENTO", value: formatDate(invoice.dueDate) },
-    { label: "STATUS", value: (invoice.status || "pendente").toUpperCase() }
+    { label: "STATUS", value: (["enviado", "faturado", "faturada"].includes(String(invoice.status || "").toLowerCase()) ? "FATURADA" : (invoice.status || "pendente").toUpperCase()) }
   ];
 
   doc.setDrawColor(220, 225, 230);
@@ -3145,6 +3818,16 @@ function renderNfseModal(invoice) {
         ISS 3% • PIS 0,65% • COFINS 3% • ISS retido na fonte
       </div>
 
+      <div style="background:#fff;border:1px solid var(--line);border-radius:8px;padding:12px 14px;margin-bottom:14px;">
+        <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;">
+          <input id="nfseGerarContasReceber" type="checkbox" style="margin-top:3px;min-height:auto;" />
+          <span>
+            <strong style="display:block;color:var(--ink);font-size:0.86rem;">Gerar novo Contas a Receber para esta NFS-e</strong>
+            <span style="display:block;color:var(--muted);font-size:0.78rem;margin-top:3px;">Deixe desmarcado quando esta NFS-e pertencer à Invoice já faturada. Assim a nota ficará vinculada ao mesmo título financeiro, sem duplicidade.</span>
+          </span>
+        </label>
+      </div>
+
       <div id="nfseStatus" style="display:none;padding:10px 14px;border-radius:7px;margin-bottom:12px;font-size:0.85rem;"></div>
 
       <div style="display:flex;gap:10px;justify-content:flex-end;">
@@ -3184,6 +3867,15 @@ function renderNfseModal(invoice) {
       return;
     }
 
+    const gerarNovoContasReceber = document.getElementById("nfseGerarContasReceber").checked;
+    const contasReceberExistente = state.receivables.find(item => normalizeKey(item.hbl) === normalizeKey(invoice.hbl));
+    if (gerarNovoContasReceber && contasReceberExistente) {
+      const confirmarDuplicidade = window.confirm(
+        "Já existe um Contas a Receber vinculado a esta Invoice/HBL. Deseja realmente gerar um novo título para esta NFS-e?"
+      );
+      if (!confirmarDuplicidade) return;
+    }
+
     btn.disabled = true;
     btn.textContent = "Emitindo...";
     statusDiv.style.display = "block";
@@ -3203,8 +3895,34 @@ function renderNfseModal(invoice) {
           tipo: tipoServico,
           valor,
           servicos: servicosSelecionados.map(s => s.service_description),
-          emitidaEm: new Date().toISOString()
+          emitidaEm: new Date().toISOString(),
+          gerarContasReceber: gerarNovoContasReceber
         });
+
+        if (gerarNovoContasReceber) {
+          const nfseReceivableId = `AR-NFSE-${result.ref}`;
+          if (!state.receivables.some(item => item.id === nfseReceivableId)) {
+            state.receivables.push({
+              id: nfseReceivableId,
+              source: "nfse",
+              nfseRef: result.ref,
+              client: invoice.client,
+              hbl: invoice.hbl,
+              invoiceNo: getInvoiceNo(invoice),
+              value: valor,
+              issueDate: todayIso(),
+              billedDate: todayIso(),
+              dueDate: invoice.dueDate,
+              category: invoice.category || "Faturamento COMEX",
+              costCenter: invoice.costCenter || "Operação COMEX",
+              receivedAmount: 0,
+              difference: 0,
+              openBalance: valor,
+              financialStatus: "EM ABERTO",
+              status: "faturado"
+            });
+          }
+        }
         save();
       }
 
@@ -3410,6 +4128,19 @@ document.getElementById("loginForm").addEventListener("submit", async (event) =>
   }
 });
 
+document.getElementById("firstAccessButton").addEventListener("click", async () => {
+  const email=document.getElementById("loginEmail").value.trim().toLowerCase();
+  const password=document.getElementById("loginPassword").value;
+  const err=document.getElementById("loginError"); err.textContent="";
+  if(!email || password.length < 8){ err.textContent="Informe o e-mail autorizado e uma senha com pelo menos 8 caracteres."; return; }
+  try{
+    showSyncStatus("Criando primeiro acesso...");
+    const payload=await sbFetch("/auth/v1/signup",{method:"POST",body:JSON.stringify({email,password})});
+    if(payload.access_token){ authToken=payload.access_token; currentUserId=payload.user?.id||""; currentUserEmail=email; sessionStorage.setItem("vanguardToken",authToken);sessionStorage.setItem("vanguardUserId",currentUserId);sessionStorage.setItem("vanguardUserEmail",currentUserEmail);await selfRegisterIfNeeded();await loadRemoteState(); }
+    else { err.textContent="Cadastro criado. Confirme o e-mail, se solicitado, e depois clique em Entrar."; showSyncStatus("Primeiro acesso criado"); }
+  }catch(e){ err.textContent=e.message||"Não foi possível criar o acesso."; showSyncStatus("Falha no primeiro acesso",true); }
+});
+
 document.getElementById("logoutButton").addEventListener("click", logout);
 
 document.getElementById("rateDate").value = todayIso();
@@ -3469,7 +4200,8 @@ document.querySelector(".content").addEventListener("click", async (e) => {
   navBtn.className = "nav-item";
   navBtn.dataset.view = "nfse-list";
   navBtn.textContent = "NFS-e";
-  sidebar.appendChild(navBtn);
+  const billedNav = sidebar.querySelector('[data-view="billed"]');
+  if (billedNav) sidebar.insertBefore(navBtn, billedNav); else sidebar.appendChild(navBtn);
 
   const section = document.createElement("section");
   section.className = "view";
@@ -3480,7 +4212,7 @@ document.querySelector(".content").addEventListener("click", async (e) => {
         <p class="eyebrow">Emissão fiscal</p>
         <h2>NFS-e emitidas</h2>
       </div>
-      <span class="status-pill" id="nfseCount">0 notas</span>
+      <div class="topbar-actions"><span class="status-pill" id="nfseCount">0 notas</span><button class="secondary-button" id="exportNfseReport">Exportar relatório</button><button class="primary-button" id="newManualNfse">+ Nova NFS-e Manual</button></div>
     </div>
     <div class="panel">
       <div class="table-wrap">
@@ -3505,6 +4237,8 @@ document.querySelector(".content").addEventListener("click", async (e) => {
     </div>
   `;
   contentEl.appendChild(section);
+  section.querySelector("#newManualNfse")?.addEventListener("click", openManualNfseModal);
+  section.querySelector("#exportNfseReport")?.addEventListener("click", exportNfseReport);
 
   navBtn.addEventListener("click", () => {
     document.querySelectorAll(".nav-item, .view").forEach(el => el.classList.remove("active"));
@@ -3513,6 +4247,16 @@ document.querySelector(".content").addEventListener("click", async (e) => {
     renderNfseList();
   });
 })();
+
+
+function openManualNfseModal() {
+  seedMasterDataFromOperation(); const clients=activeMasterClients(), services=activeCatalogServices();
+  const modal=document.createElement('div');modal.className='modal-backdrop manual-nfse-modern';modal.innerHTML=`<div class="modal-card"><div class="modal-head"><div><p class="eyebrow">Emissão fiscal manual</p><h2>Nova NFS-e</h2></div><button class="icon-button" id="mnClose">✕</button></div><div class="form-grid"><label>HBL *<input id="mnHbl" placeholder="Obrigatória" /></label><label>Cliente *<select id="mnClient"><option value="">Selecione...</option>${clients.map(c=>`<option value="${escapeHtml(c.id)}">${escapeHtml(c.name)}</option>`).join('')}</select></label><label>CNPJ<input id="mnCnpj" readonly /></label><label>Serviço *<select id="mnService"><option value="">Selecione...</option>${services.map(s=>`<option value="${escapeHtml(s.id)}">${escapeHtml(s.name)}</option>`).join('')}</select></label><label>Valor BRL *<input id="mnValue" type="number" min="0" step="0.01" /></label><label>Descrição<input id="mnDesc" /></label></div><div id="mnWarn" style="display:none;color:var(--bad);margin-top:10px;"></div><div style="display:flex;justify-content:flex-end;gap:10px;margin-top:18px;"><button class="text-button" id="mnCancel">Cancelar</button><button class="primary-button" id="mnContinue">Continuar para emissão</button></div></div>`;document.body.appendChild(modal);
+  const close=()=>modal.remove();modal.querySelector('#mnClose').onclick=close;modal.querySelector('#mnCancel').onclick=close;const cs=modal.querySelector('#mnClient'),ss=modal.querySelector('#mnService');cs.onchange=()=>{const c=clients.find(x=>x.id===cs.value);modal.querySelector('#mnCnpj').value=c?.cnpj||'';};ss.onchange=()=>{const s=services.find(x=>x.id===ss.value);modal.querySelector('#mnDesc').value=s?.nfseDescription||s?.invoiceDescription||s?.name||'';};
+  modal.querySelector('#mnContinue').onclick=()=>{const hbl=modal.querySelector('#mnHbl').value.trim(),c=clients.find(x=>x.id===cs.value),svc=services.find(x=>x.id===ss.value),value=Number(modal.querySelector('#mnValue').value||0),warn=modal.querySelector('#mnWarn');if(!hbl){warn.style.display='block';warn.textContent='Informe a HBL. Esta informação é obrigatória para emissão da NFS-e.';return;}if(!c||!svc||value<=0){warn.style.display='block';warn.textContent='Selecione cliente, serviço e informe um valor válido.';return;}
+    let invoice=state.invoices.find(i=>normalizeKey(i.hbl)===normalizeKey(hbl));if(!invoice){const row={hbl_no:hbl,cliente:c.name,cnpj:c.cnpj||'Não informado',service_description:modal.querySelector('#mnDesc').value.trim()||svc.name,item_description:'',calculation_code:'FLAT',entered_amount:value,entered_curr_total:value,currency:'BRL',issue_date:todayIso(),client_email:c.email||'',manual:true,nfseOnly:true};state.rows.push(row);consolidateInvoices();invoice=state.invoices.find(i=>i.hbl===hbl);if(invoice){invoice.manual=true;invoice.nfseOnly=true;invoice.status='pendente';}} else if(normalizeKey(invoice.client)!==normalizeKey(c.name)){if(!confirm(`A HBL ${hbl} já está vinculada ao cliente ${invoice.client}. Deseja continuar com esse registro?`))return;}
+    addLog('success',`NFS-e manual preparada — ${hbl}`,c.name);save();render();close();setTimeout(()=>renderNfseModal(invoice),50);};
+}
 
 function renderNfseList() {
   // Coleta todas as NFS-e de todas as invoices
@@ -3566,95 +4310,40 @@ function renderNfseList() {
 // ─────────────────────────────────────────────────────────────
 
 
-// Aba Usuários — injetar no HTML dinamicamente (só admin verá)
+// Aba Usuários — gestão de acessos (Admin / Super Admin)
 (function injectUsersView() {
-  const sidebar = document.querySelector(".sidebar");
-  const content = document.querySelector(".content");
+  const sidebar = document.querySelector(".sidebar"), content = document.querySelector(".content");
   if (!sidebar || !content) return;
-
-  const navBtn = document.createElement("button");
-  navBtn.className = "nav-item";
-  navBtn.dataset.view = "users";
-  navBtn.textContent = "Usuários";
-  navBtn.style.display = "none";
-  sidebar.appendChild(navBtn);
-
-  const section = document.createElement("section");
-  section.className = "view";
-  section.id = "users";
-  section.innerHTML = `
-    <div class="section-head">
-      <div>
-        <p class="eyebrow">Controle de acesso</p>
-        <h2>Gestão de usuários</h2>
-      </div>
-      <span class="status-pill" id="membersCount">0 membros</span>
-    </div>
-    <div class="panel">
-      <div class="panel-head">
-        <h3>Membros da equipe Vanguard</h3>
-        <span style="color:var(--muted);font-size:0.82rem">Novos usuários entram como Operador automaticamente ao fazer o primeiro login</span>
-      </div>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>E-mail</th><th>Perfil</th><th>Ação</th></tr></thead>
-          <tbody id="usersViewBody"><tr><td colspan="3" class="empty">Faça login como admin para ver os membros.</td></tr></tbody>
-        </table>
-      </div>
-    </div>
-    <div class="panel">
-      <div class="panel-head"><h3>Sobre os perfis</h3></div>
-      <div style="display:grid;gap:10px;grid-template-columns:1fr 1fr;margin-top:8px;">
-        <div style="background:var(--bg);border-radius:7px;padding:14px;border:1px solid var(--line);">
-          <strong>Admin</strong>
-          <p style="color:var(--muted);font-size:0.85rem;margin:6px 0 0;">Acesso total: todas as abas, configuração de e-mail, exclusão de clientes e importações, gestão de usuários.</p>
-        </div>
-        <div style="background:var(--bg);border-radius:7px;padding:14px;border:1px solid var(--line);">
-          <strong>Operador</strong>
-          <p style="color:var(--muted);font-size:0.85rem;margin:6px 0 0;">Acesso operacional: importação, invoices, clientes, câmbio, contas a receber, recebimentos, auditoria. Sem acesso à aba E-mail.</p>
-        </div>
-      </div>
-    </div>
-  `;
+  const navBtn = document.createElement("button"); navBtn.className="nav-item"; navBtn.dataset.view="users"; navBtn.textContent="Usuários e Acessos"; navBtn.style.display="none"; sidebar.appendChild(navBtn);
+  const section=document.createElement("section"); section.className="view"; section.id="users";
+  section.innerHTML=`<div class="section-head"><div><p class="eyebrow">Administração</p><h2>Usuários e Acessos</h2></div><span class="status-pill" id="membersCount">0 membros</span></div>
+  <div class="panel"><div class="panel-head"><h3>Adicionar usuário Vanguard</h3><span>Autorize o e-mail e defina o perfil antes do primeiro acesso.</span></div>
+    <div class="form-grid"><label>E-mail corporativo<input id="newMemberEmail" type="email" placeholder="nome@vanguardlogistics.com"></label><label>Perfil<select id="newMemberRole"><option value="operador">Operador</option><option value="consulta">Consulta</option><option value="admin">Administrador Vanguard</option></select></label></div>
+    <div class="bulk-actions"><button class="primary-button" id="addMemberButton">Autorizar usuário</button></div></div>
+  <div class="panel"><div class="panel-head"><h3>Equipe autorizada</h3><span>Desative acessos sem apagar o histórico.</span></div><div class="table-wrap"><table><thead><tr><th>E-mail</th><th>Perfil</th><th>Status</th><th>Cadastro</th><th>Ação</th></tr></thead><tbody id="usersViewBody"></tbody></table></div></div>
+  <div class="panel"><div class="panel-head"><h3>Perfis</h3></div><div class="cards-grid"><article class="kpi"><span>Proprietária / Super Admin</span><strong style="font-size:1rem">Acesso total e perfil protegido</strong></article><article class="kpi"><span>Administrador Vanguard</span><strong style="font-size:1rem">Usuários + operação + limpeza controlada</strong></article><article class="kpi"><span>Operador</span><strong style="font-size:1rem">Rotinas operacionais</strong></article><article class="kpi"><span>Consulta</span><strong style="font-size:1rem">Visualização e relatórios</strong></article></div></div>`;
   content.appendChild(section);
-
-  navBtn.addEventListener("click", () => {
-    document.querySelectorAll(".nav-item, .view").forEach((el) => el.classList.remove("active"));
-    navBtn.classList.add("active");
-    section.classList.add("active");
-    renderUsersView().then(() => {
-      const tbody = document.getElementById("usersViewBody");
-      const count = tbody ? tbody.querySelectorAll("tr").length : 0;
-      const pill = document.getElementById("membersCount");
-      if (pill) pill.textContent = count + " membros";
-    });
+  navBtn.addEventListener("click",()=>{document.querySelectorAll(".nav-item,.view").forEach(el=>el.classList.remove("active"));navBtn.classList.add("active");section.classList.add("active");renderUsersView();});
+  section.querySelector("#addMemberButton").addEventListener("click",async()=>{const email=section.querySelector("#newMemberEmail").value.trim().toLowerCase(), role=section.querySelector("#newMemberRole").value;if(!email||!email.includes("@")){alert("Informe um e-mail válido.");return;}if(role==="admin"&&!isSuperAdmin()&&!isAdmin()){alert("Sem permissão.");return;}const btn=section.querySelector("#addMemberButton");const original=btn.textContent;try{btn.disabled=true;btn.textContent="Enviando convite...";await addMember(email,role);addLog("success","Usuário autorizado e convidado",`${email} · ${role} · por ${currentUserEmail}`);section.querySelector("#newMemberEmail").value="";await renderUsersView();alert("Usuário autorizado. O convite para criação do acesso foi enviado por e-mail.");}catch(e){await renderUsersView();alert("O usuário pode ter sido autorizado, mas o convite não foi enviado: "+e.message);}finally{btn.disabled=false;btn.textContent=original;}});
+  section.addEventListener("change",async e=>{const id=e.target.dataset.memberRole;if(!id||!isAdmin())return;try{await updateMemberRole(id,e.target.value);addLog("success","Perfil alterado",`${e.target.value} · por ${currentUserEmail}`);await renderUsersView();}catch(err){alert(err.message);}});
+  section.addEventListener("click",async e=>{
+    const inviteId=e.target.dataset.resendInvite;
+    if(inviteId&&isAdmin()){const email=e.target.dataset.email;if(!confirm(`Reenviar o convite de acesso para ${email}?`))return;try{e.target.disabled=true;e.target.textContent="Enviando...";await sendMemberInvite(email);addLog("success","Convite reenviado",`${email} · por ${currentUserEmail}`);alert("Convite reenviado por e-mail.");}catch(err){alert("Não foi possível reenviar o convite: "+err.message);}finally{await renderUsersView();}return;}
+    const id=e.target.dataset.toggleMember;if(!id||!isAdmin())return;const active=e.target.dataset.active!=="true";if(!confirm(`${active?"Ativar":"Desativar"} este usuário?`))return;try{await setMemberActive(id,active);addLog("warning",active?"Usuário ativado":"Usuário desativado",`por ${currentUserEmail}`);await renderUsersView();}catch(err){alert(err.message);}
   });
+})();
 
-  // Delegação de eventos na tabela de membros
-  section.addEventListener("change", async (event) => {
-    const memberId = event.target.dataset.memberRole;
-    if (!memberId || !isAdmin()) return;
-    try {
-      await updateMemberRole(memberId, event.target.value);
-      showSyncStatus("Perfil atualizado");
-      addLog("success", "Perfil de membro alterado", event.target.value);
-    } catch (e) {
-      showSyncStatus("Erro ao alterar perfil: " + e.message, true);
-    }
-  });
-
-  section.addEventListener("click", async (event) => {
-    const memberId = event.target.dataset.removeMember;
-    if (!memberId || !isAdmin()) return;
-    if (!window.confirm("Remover este membro? Ele perderá o acesso ao sistema.")) return;
-    try {
-      await removeMember(memberId);
-      addLog("success", "Membro removido", memberId);
-      renderUsersView();
-    } catch (e) {
-      showSyncStatus("Erro ao remover: " + e.message, true);
-    }
-  });
+// Administração de Dados — somente Admin / Super Admin
+(function injectDataAdminView(){
+  const sidebar=document.querySelector(".sidebar"),content=document.querySelector(".content"); if(!sidebar||!content)return;
+  const nav=document.createElement("button");nav.className="nav-item";nav.dataset.view="data-admin";nav.textContent="Administração de Dados";nav.style.display="none";sidebar.appendChild(nav);
+  const sec=document.createElement("section");sec.className="view";sec.id="data-admin";sec.innerHTML=`<div class="section-head"><div><p class="eyebrow">Administração</p><h2>Administração de Dados</h2></div></div>
+  <div class="panel"><div class="panel-head"><h3>Limpar ambiente de testes</h3><span>Cadastros mestres não são selecionados automaticamente.</span></div><p class="helper-text">Use esta função antes da entrada em produção. A limpeza não inclui Clientes, Clientes Especiais, Serviços, Câmbio, Dados Bancários ou NFS-e fiscal autorizada.</p>
+  <div style="display:grid;gap:10px;margin:16px 0"><label><input type="checkbox" class="cleanup-item" value="billing" checked> Invoices / faturamentos de teste e documentos manuais</label><label><input type="checkbox" class="cleanup-item" value="receivables" checked> Contas a Receber</label><label><input type="checkbox" class="cleanup-item" value="receipts" checked> Recebimentos e conciliações</label><label><input type="checkbox" class="cleanup-item" value="imports" checked> Importações / queries de teste</label><label><input type="checkbox" class="cleanup-item" value="logs"> Logs de auditoria de teste</label></div>
+  <label>Para confirmar, digite <strong>LIMPAR TESTES</strong><input id="cleanupConfirm" placeholder="LIMPAR TESTES"></label><div class="bulk-actions" style="margin-top:14px"><button class="danger-button" id="cleanupButton">Limpar dados selecionados</button></div></div>
+  <div class="panel"><div class="panel-head"><h3>Exclusão e rastreabilidade</h3></div><p class="helper-text">Exclusões operacionais devem ser feitas por Administrador e registradas na Auditoria. NFS-e já autorizada não é apagada por esta rotina.</p></div>`;content.appendChild(sec);
+  nav.addEventListener("click",()=>{document.querySelectorAll(".nav-item,.view").forEach(el=>el.classList.remove("active"));nav.classList.add("active");sec.classList.add("active");});
+  sec.querySelector("#cleanupButton").addEventListener("click",async()=>{if(!isAdmin()){alert("Apenas Administradores podem limpar dados.");return;}if(sec.querySelector("#cleanupConfirm").value.trim()!=="LIMPAR TESTES"){alert("Digite LIMPAR TESTES para confirmar.");return;}const selected=[...sec.querySelectorAll(".cleanup-item:checked")].map(x=>x.value);if(!selected.length){alert("Selecione pelo menos um grupo.");return;}if(!confirm("Esta ação removerá os dados de teste selecionados. Deseja continuar?"))return;try{clearTestData(selected);addLog("warning","Limpeza administrativa do ambiente",`${selected.join(", ")} · por ${currentUserEmail}`);await forceSaveCompanyState();render();sec.querySelector("#cleanupConfirm").value="";alert("Dados de teste removidos com sucesso.");}catch(e){alert("Erro na limpeza: "+e.message);}});
 })();
 
 // Inicialização: tenta restaurar sessão salva ou pede login
@@ -3676,3 +4365,80 @@ function renderNfseList() {
     showLogin("Sessão expirada. Faça login novamente.");
   }
 })();
+
+
+// V3.6.2 — central de Emissão Fiscal Manual
+(function setupManualIssuanceHub(){
+  const nfseChoice=document.getElementById("manualNfseChoice");
+  const invoiceChoice=document.getElementById("manualInvoiceChoice");
+  const launch=document.getElementById("manualLaunchButton");
+  const title=document.getElementById("manualLaunchTitle");
+  const text=document.getElementById("manualLaunchText");
+  if(!nfseChoice||!invoiceChoice||!launch) return;
+  let mode="nfse";
+  const paint=()=>{
+    nfseChoice.classList.toggle("active",mode==="nfse");
+    invoiceChoice.classList.toggle("active",mode==="invoice");
+    title.textContent=mode==="nfse"?"NFS-e Manual":"Invoice Manual";
+    text.textContent=mode==="nfse"?"Selecione um cliente cadastrado, informe a HBL obrigatória e os serviços para preparar a emissão fiscal.":"Crie uma Invoice avulsa usando o cadastro mestre de clientes e serviços, mantendo a HBL como identificação obrigatória.";
+    launch.textContent=mode==="nfse"?"Iniciar NFS-e Manual":"Iniciar Invoice Manual";
+  };
+  nfseChoice.addEventListener("click",()=>{mode="nfse";paint();});
+  invoiceChoice.addEventListener("click",()=>{mode="invoice";paint();});
+  launch.addEventListener("click",()=>mode==="nfse"?openManualNfseModal():openManualInvoiceModal());
+  paint();
+})();
+
+// V3.6.4 — busca, edição e revisão de documentos manuais
+(function setupManualDocumentManager(){
+  const toggle=document.getElementById('manualSearchButton'), panel=document.getElementById('manualSearchPanel');
+  const q=document.getElementById('manualDocSearch'), type=document.getElementById('manualDocType'), status=document.getElementById('manualDocStatus'), body=document.getElementById('manualDocsBody');
+  if(!toggle||!panel||!body) return;
+  const docs=()=>{
+    const out=[];
+    (state.invoices||[]).filter(i=>i.manual).forEach(inv=>{
+      if(!inv.nfseOnly) out.push({kind:'invoice',inv,doc:getInvoiceNo(inv)||inv.hbl,issued:['enviado','faturado','faturada'].includes(String(inv.status||'').toLowerCase())||(state.billed||[]).some(b=>normalizeKey(b.hbl)===normalizeKey(inv.hbl))});
+      if(inv.nfseOnly && !(inv.nfse||[]).length) out.push({kind:'nfse',inv,doc:'NFS-e em preparação',issued:false});
+      (inv.nfse||[]).forEach(n=>out.push({kind:'nfse',inv,nfse:n,doc:n.numero||n.number||n.ref||'NFS-e',issued:true}));
+    });
+    return out;
+  };
+  window.renderManualDocuments=()=>{
+    const term=normalizeKey(q.value||''), t=type.value, st=status.value;
+    const rows=docs().filter(d=>{
+      const hay=normalizeKey([d.inv.client,d.inv.hbl,d.doc].join(' '));
+      return (!term||hay.includes(term))&&(t==='all'||d.kind===t)&&(st==='all'||(st==='issued'?d.issued:!d.issued));
+    });
+    body.innerHTML=rows.length?rows.map(d=>`<tr><td>${escapeHtml(d.inv.client||'-')}</td><td>${escapeHtml(d.inv.hbl||'-')}</td><td>${escapeHtml(d.doc||'-')}</td><td>${d.kind==='nfse'?'NFS-e':'Invoice'}</td><td>${brl.format(Number(d.inv.total||0))}</td><td><span class="status-pill">${d.issued?(d.kind==='nfse'?'Emitida':'Faturada'):'Em preparação'}</span></td><td><div class="manual-doc-actions"><button class="text-button" data-manual-view="${escapeHtml(d.inv.hbl)}" data-kind="${d.kind}">Visualizar</button>${!d.issued?`<button class="text-button" data-manual-edit="${escapeHtml(d.inv.hbl)}" data-kind="${d.kind}">Editar</button>`:''}</div></td></tr>`).join(''):'<tr><td colspan="7" class="empty">Nenhum documento localizado.</td></tr>';
+    body.querySelectorAll('[data-manual-edit]').forEach(b=>b.onclick=()=>b.dataset.kind==='invoice'?openManualInvoiceModal(b.dataset.manualEdit):openManualNfseModal(b.dataset.manualEdit));
+    body.querySelectorAll('[data-manual-view]').forEach(b=>b.onclick=()=>{const inv=(state.invoices||[]).find(i=>normalizeKey(i.hbl)===normalizeKey(b.dataset.manualView));if(!inv)return;if(b.dataset.kind==='nfse') renderNfseModal(inv); else openInvoicePreview(inv.hbl)});
+  };
+  toggle.onclick=()=>{panel.hidden=!panel.hidden;if(!panel.hidden)renderManualDocuments();};
+  [q,type,status].forEach(el=>el.addEventListener(el.tagName==='INPUT'?'input':'change',renderManualDocuments));
+})();
+
+openManualInvoiceModal = function(existingHbl=null) {
+  seedMasterDataFromOperation();
+  const clients=activeMasterClients(), services=activeCatalogServices();
+  const existing=existingHbl?(state.invoices||[]).find(i=>normalizeKey(i.hbl)===normalizeKey(existingHbl)):null;
+  const existingRows=existing?(state.rows||[]).filter(r=>normalizeKey(r.hbl_no||r.hbl)===normalizeKey(existing.hbl)):[];
+  const modal=document.createElement('div'); modal.className='modal-backdrop'; modal.id='manualInvoiceModal';
+  modal.innerHTML=`<div class="modal-card" style="max-width:920px;max-height:92vh;overflow:auto;"><div class="modal-head"><div><p class="eyebrow">Faturamento manual</p><h2>${existing?'Editar':'Nova'} Invoice Manual</h2></div><button class="icon-button" id="closeManualInvoice">✕</button></div><div class="form-grid"><label>HBL *<input id="miHbl" placeholder="HBL obrigatória" value="${escapeHtml(existing?.hbl||'')}" ${existing?'readonly':''}/></label><label>Cliente *<select id="miClient"><option value="">Selecione...</option>${clients.map(c=>`<option value="${escapeHtml(c.id)}" ${existing&&normalizeKey(c.name)===normalizeKey(existing.client)?'selected':''}>${escapeHtml(c.name)}${c.cnpj?` — ${escapeHtml(c.cnpj)}`:''}</option>`).join('')}</select></label><label>CNPJ<input id="miCnpj" readonly value="${escapeHtml(existing?.cnpj||'')}"/></label><label>E-mail faturamento<input id="miEmail" type="email" value="${escapeHtml(existing?.clientEmail||'')}"/></label><label>Data emissão<input id="miIssueDate" type="date" value="${existing?.issueDate||todayIso()}"/></label><label>Vencimento<input id="miDueDate" type="date" value="${existing?.dueDate||''}"/></label></div><div class="panel-head" style="margin-top:16px"><h3>Serviços</h3><button class="text-button" id="miAddService">+ Adicionar serviço</button></div><div id="miServices"></div><div id="miError" style="display:none;color:var(--bad);margin-top:10px"></div><div style="display:flex;justify-content:flex-end;gap:10px;margin-top:18px"><button class="text-button" id="miCancel">Cancelar</button><button class="primary-button" id="miSave">Revisar Invoice</button></div></div>`;
+  document.body.appendChild(modal); const close=()=>modal.remove(); modal.querySelector('#closeManualInvoice').onclick=close;modal.querySelector('#miCancel').onclick=close;
+  const clientSel=modal.querySelector('#miClient');
+  const fillClient=()=>{const c=clients.find(x=>x.id===clientSel.value);if(!c)return;modal.querySelector('#miCnpj').value=c.cnpj||'Não informado';if(!modal.querySelector('#miEmail').value)modal.querySelector('#miEmail').value=c.email||'';if(!modal.querySelector('#miDueDate').value){const d=new Date();d.setDate(d.getDate()+Number(c.dueDays||7));modal.querySelector('#miDueDate').value=d.toISOString().slice(0,10);}}; clientSel.onchange=fillClient; if(clientSel.value)fillClient();
+  const addLine=(r=null)=>{const row=document.createElement('div');row.className='form-grid';row.style='border-top:1px solid var(--line);padding-top:12px;margin-top:8px';const svc=services.find(s=>normalizeKey(s.name)===normalizeKey(r?.service_description));row.innerHTML=`<label>Serviço *<select class="miSvc"><option value="">Selecione...</option>${services.map(s=>`<option value="${escapeHtml(s.id)}" ${svc?.id===s.id?'selected':''}>${escapeHtml(s.name)}</option>`).join('')}</select></label><label>Descrição<input class="miDesc" value="${escapeHtml(r?.service_description||'')}"/></label><label>Moeda<select class="miCurrency">${['BRL','USD','EUR','GBP','CAD','JPY'].map(c=>`<option ${c===(r?.currency||'BRL')?'selected':''}>${c}</option>`).join('')}</select></label><label>Valor original *<input class="miAmount" type="number" min="0" step="0.01" value="${Number(r?.entered_amount||r?.entered_curr_total||0)||''}"/></label><label>Item/Referência<input class="miItem" value="${escapeHtml(r?.item_description||'')}"/></label><label>Ação<button type="button" class="text-button miRemove">Remover</button></label>`;modal.querySelector('#miServices').appendChild(row);const sel=row.querySelector('.miSvc');sel.onchange=()=>{const s=services.find(x=>x.id===sel.value);row.querySelector('.miDesc').value=s?.invoiceDescription||s?.name||''};row.querySelector('.miRemove').onclick=()=>row.remove();};
+  modal.querySelector('#miAddService').onclick=()=>addLine(); (existingRows.length?existingRows:[null]).forEach(addLine);
+  modal.querySelector('#miSave').onclick=()=>{const hbl=modal.querySelector('#miHbl').value.trim(),c=clients.find(x=>x.id===clientSel.value),err=modal.querySelector('#miError'),lines=[...modal.querySelectorAll('#miServices .form-grid')];if(!hbl||!c){err.style.display='block';err.textContent=!hbl?'Informe a HBL.':'Selecione um cliente.';return;}if(!existing&&(state.invoices||[]).some(i=>normalizeKey(i.hbl)===normalizeKey(hbl))){err.style.display='block';err.textContent='Já existe uma Invoice com esta HBL.';return;}const valid=lines.filter(l=>services.find(x=>x.id===l.querySelector('.miSvc').value)&&Number(l.querySelector('.miAmount').value||0)>0);if(!valid.length){err.style.display='block';err.textContent='Adicione ao menos um serviço com valor.';return;}const total=valid.reduce((a,l)=>a+Number(l.querySelector('.miAmount').value||0),0);const review=document.createElement('div');review.className='modal-backdrop';review.innerHTML=`<div class="modal-card" style="max-width:620px"><div class="modal-head"><div><p class="eyebrow">Revisão</p><h2>Revisar antes de concluir</h2></div></div><div class="panel"><p><b>Cliente:</b> ${escapeHtml(c.name)}</p><p><b>HBL:</b> ${escapeHtml(hbl)}</p><p><b>Serviços:</b> ${valid.length}</p><p><b>Valor original informado:</b> ${brl.format(total)}</p></div><div style="display:flex;justify-content:flex-end;gap:10px;margin-top:18px"><button class="secondary-button" id="revEdit">← Editar</button><button class="primary-button" id="revFinish">${existing?'Salvar alterações':'Concluir Invoice'}</button></div></div>`;document.body.appendChild(review);review.querySelector('#revEdit').onclick=()=>review.remove();review.querySelector('#revFinish').onclick=async()=>{const rows=[];for(const line of valid){const svc=services.find(x=>x.id===line.querySelector('.miSvc').value),amount=Number(line.querySelector('.miAmount').value||0);rows.push({hbl_no:hbl,cliente:c.name,cnpj:c.cnpj||'Não informado',service_description:line.querySelector('.miDesc').value.trim()||svc.name,item_description:line.querySelector('.miItem').value.trim(),calculation_code:'FLAT',entered_amount:amount,entered_curr_total:amount,currency:line.querySelector('.miCurrency').value,issue_date:modal.querySelector('#miIssueDate').value||todayIso(),client_email:modal.querySelector('#miEmail').value.trim(),manual:true});}await updateRatesForRows(rows);if(existing)state.rows=state.rows.filter(r=>normalizeKey(r.hbl_no||r.hbl)!==normalizeKey(existing.hbl));state.rows.push(...rows);consolidateInvoices();const inv=state.invoices.find(i=>normalizeKey(i.hbl)===normalizeKey(hbl));if(inv){inv.manual=true;inv.dueDate=modal.querySelector('#miDueDate').value||inv.dueDate;inv.clientEmail=modal.querySelector('#miEmail').value.trim();}addLog('success',`${existing?'Invoice manual alterada':'Invoice manual criada'} — ${hbl}`,c.name);save();render();review.remove();close();if(window.renderManualDocuments)renderManualDocuments();};};
+};
+
+// Edição de NFS-e manual somente enquanto ainda não foi efetivamente emitida.
+const _openManualNfseBase=openManualNfseModal;
+openManualNfseModal = function(existingHbl=null){
+  if(!existingHbl) return _openManualNfseBase();
+  const inv=(state.invoices||[]).find(i=>normalizeKey(i.hbl)===normalizeKey(existingHbl));
+  if(!inv) return _openManualNfseBase();
+  if((inv.nfse||[]).length){alert('Esta NFS-e já foi emitida. Para preservar a rastreabilidade fiscal, os dados emitidos não podem ser sobrescritos por esta tela.');return;}
+  seedMasterDataFromOperation();const clients=activeMasterClients(),services=activeCatalogServices(),row=(state.rows||[]).find(r=>normalizeKey(r.hbl_no||r.hbl)===normalizeKey(inv.hbl));
+  const modal=document.createElement('div');modal.className='modal-backdrop manual-nfse-modern';modal.innerHTML=`<div class="modal-card"><div class="modal-head"><div><p class="eyebrow">Emissão fiscal manual</p><h2>Editar NFS-e em preparação</h2></div><button class="icon-button" id="mnClose">✕</button></div><div class="form-grid"><label>HBL *<input id="mnHbl" value="${escapeHtml(inv.hbl)}" readonly/></label><label>Cliente *<select id="mnClient">${clients.map(c=>`<option value="${escapeHtml(c.id)}" ${normalizeKey(c.name)===normalizeKey(inv.client)?'selected':''}>${escapeHtml(c.name)}</option>`).join('')}</select></label><label>CNPJ<input id="mnCnpj" readonly value="${escapeHtml(inv.cnpj||'')}"/></label><label>Serviço *<select id="mnService"><option value="">Selecione...</option>${services.map(s=>`<option value="${escapeHtml(s.id)}" ${normalizeKey(s.name)===normalizeKey(row?.service_description)?'selected':''}>${escapeHtml(s.name)}</option>`).join('')}</select></label><label>Valor BRL *<input id="mnValue" type="number" min="0" step="0.01" value="${Number(row?.entered_amount||inv.total||0)}"/></label><label>Descrição<input id="mnDesc" value="${escapeHtml(row?.service_description||'')}"/></label></div><div id="mnWarn" style="display:none;color:var(--bad);margin-top:10px"></div><div style="display:flex;justify-content:flex-end;gap:10px;margin-top:18px"><button class="secondary-button" id="mnCancel">Cancelar</button><button class="primary-button" id="mnContinue">Revisar e continuar</button></div></div>`;document.body.appendChild(modal);const close=()=>modal.remove();modal.querySelector('#mnClose').onclick=close;modal.querySelector('#mnCancel').onclick=close;const cs=modal.querySelector('#mnClient'),ss=modal.querySelector('#mnService');cs.onchange=()=>{const c=clients.find(x=>x.id===cs.value);modal.querySelector('#mnCnpj').value=c?.cnpj||''};ss.onchange=()=>{const s=services.find(x=>x.id===ss.value);modal.querySelector('#mnDesc').value=s?.nfseDescription||s?.invoiceDescription||s?.name||''};modal.querySelector('#mnContinue').onclick=()=>{const c=clients.find(x=>x.id===cs.value),svc=services.find(x=>x.id===ss.value),value=Number(modal.querySelector('#mnValue').value||0),warn=modal.querySelector('#mnWarn');if(!c||!svc||value<=0){warn.style.display='block';warn.textContent='Selecione cliente, serviço e informe um valor válido.';return;}const ok=confirm(`Revisar NFS-e antes de continuar:\n\nCliente: ${c.name}\nHBL: ${inv.hbl}\nServiço: ${svc.name}\nValor: ${brl.format(value)}\n\nDeseja salvar estas alterações e continuar para a emissão?`);if(!ok)return;if(row){row.cliente=c.name;row.cnpj=c.cnpj||'Não informado';row.service_description=modal.querySelector('#mnDesc').value.trim()||svc.name;row.entered_amount=value;row.entered_curr_total=value;}inv.client=c.name;inv.cnpj=c.cnpj||'Não informado';save();consolidateInvoices();const refreshed=(state.invoices||[]).find(i=>normalizeKey(i.hbl)===normalizeKey(existingHbl));addLog('success',`NFS-e manual alterada — ${inv.hbl}`,c.name);render();close();if(window.renderManualDocuments)renderManualDocuments();setTimeout(()=>renderNfseModal(refreshed||inv),50);};
+};
