@@ -101,7 +101,8 @@ const persistentKeys = [
   "selectedClients",
   "billed",
   "emailConfig",
-  "billingUserEmail"
+  "billingUserEmail",
+  "collectionHistory"
 ];
 
 const sampleRows = [
@@ -155,7 +156,9 @@ const state = {
   receiptDateTo: "",
   receiptStatusFilter: "all",
   activeReceiptId: "",
-  activeInvoiceHbl: ""
+  activeInvoiceHbl: "",
+  receivableCollectionFilter: "all",
+  collectionHistory: []
 };
 
 const defaultRates = [
@@ -1554,8 +1557,18 @@ function consolidateInvoices() {
     const first = unique[0];
     const special = getSpecialClient(first.cnpj, first.cliente);
     const dueDays = special ? Number(special.dueDays || 7) : 7;
-    const dueDate = new Date();
-    dueDate.setDate(dueDate.getDate() + dueDays);
+    const previousInvoice = state.invoices.find((invoice) => invoice.hbl === hbl) || {};
+
+    // Regra de vencimento: uma data informada manualmente pelo operador tem
+    // prioridade máxima e deve sobreviver a qualquer reconsolidação/render.
+    // O prazo do cliente (especial ou padrão) é apenas a regra automática
+    // quando não existe vencimento manual salvo.
+    const persistedManualDueDate = unique.find((row) => row.manual_due_date)?.manual_due_date
+      || (previousInvoice.manual && previousInvoice.dueDate ? previousInvoice.dueDate : "");
+    const issueDateForDue = first.issue_date || todayIso();
+    const automaticDueDate = new Date(`${issueDateForDue}T12:00:00`);
+    automaticDueDate.setDate(automaticDueDate.getDate() + dueDays);
+    const resolvedDueDate = persistedManualDueDate || automaticDueDate.toISOString().slice(0, 10);
 
     const services = unique.map((row) => {
       const fxProfile = special ? (special.fxProfile || "Vanguard") : "Abertura";
@@ -1567,7 +1580,6 @@ function consolidateInvoices() {
       return { ...row, fxRate: rate.value, fxBaseRate: rate.baseValue, fxProfile, fxSource: rate.source, negotiatedFee, convertedValue, brlValue };
     });
 
-    const previousInvoice = state.invoices.find((invoice) => invoice.hbl === hbl) || {};
     const rowEmail = unique.find((row) => row.client_email)?.client_email || "";
 
     return {
@@ -1577,7 +1589,7 @@ function consolidateInvoices() {
       cnpj: first.cnpj,
       issueDate: first.issue_date || todayIso(),
       importDate: first.import_date || "",
-      dueDate: dueDate.toISOString().slice(0, 10),
+      dueDate: resolvedDueDate,
       specialClient: Boolean(special),
       status: previousInvoice.status || "pendente",
       sentAt: previousInvoice.sentAt || "",
@@ -1788,6 +1800,29 @@ function getDashboardReceipts(invoices = getDashboardInvoices()) {
   });
 }
 
+function receivableOpenBalance(item) {
+  return Math.max(0, Number(item.openBalance ?? (Number(item.value || 0) - Number(item.receivedAmount || 0))));
+}
+
+function isReceivableOverdue(item) {
+  return Boolean(item.dueDate) && item.dueDate < todayIso() && receivableOpenBalance(item) > 0;
+}
+
+function receivableDaysOverdue(item) {
+  if (!isReceivableOverdue(item)) return 0;
+  const due = new Date(`${item.dueDate}T00:00:00`);
+  const today = new Date(`${todayIso()}T00:00:00`);
+  return Math.max(0, Math.floor((today - due) / 86400000));
+}
+
+function collectionEventsFor(item) {
+  return (state.collectionHistory || []).filter((event) => normalizeKey(event.hbl) === normalizeKey(item.hbl));
+}
+
+function latestCollectionFor(item) {
+  return collectionEventsFor(item).slice().sort((a,b)=>String(b.sentAt||"").localeCompare(String(a.sentAt||"")))[0] || null;
+}
+
 function getFilteredReceivables() {
   const hbl = normalizeKey(state.receivableSearchHbl);
   const client = normalizeKey(state.receivableSearchClient);
@@ -1798,7 +1833,13 @@ function getFilteredReceivables() {
       const filterDate = item.billedDate || item.issueDate;
       const matchesFrom = !state.receivableDateFrom || filterDate >= state.receivableDateFrom;
       const matchesTo = !state.receivableDateTo || filterDate <= state.receivableDateTo;
-      return matchesHbl && matchesClient && matchesFrom && matchesTo;
+      const overdue = isReceivableOverdue(item);
+      const hasCollection = collectionEventsFor(item).length > 0;
+      const matchesCollection = state.receivableCollectionFilter === "all"
+        || (state.receivableCollectionFilter === "overdue" && overdue)
+        || (state.receivableCollectionFilter === "due" && !overdue && receivableOpenBalance(item) > 0)
+        || (state.receivableCollectionFilter === "pending" && overdue && !hasCollection);
+      return matchesHbl && matchesClient && matchesFrom && matchesTo && matchesCollection;
     })
     .slice()
     .sort((a, b) => {
@@ -1832,18 +1873,44 @@ function getFilteredReceipts() {
 
 function renderDashboard() {
   const invoices = getDashboardInvoices();
-  const total = invoices.reduce((sum, invoice) => sum + invoice.total, 0);
-  const services = invoices.flatMap((invoice) => invoice.services);
-  const avgFx = services.length ? services.reduce((sum, item) => sum + item.fxRate, 0) / services.length : 0;
+  // V3.6.16: Total faturado usa a mesma base financeira do saldo em aberto.
+  // Valores negativos (créditos/ajustes) não reduzem o faturamento bruto nem geram saldo a receber.
+  // Com isso: Total faturado - Total recebido = Saldo em aberto.
+  const total = invoices.reduce((sum, invoice) => sum + Math.max(Number(invoice.total || 0), 0), 0);
+  const services = invoices.flatMap((invoice) => invoice.services || []);
+  const avgFx = services.length ? services.reduce((sum, item) => sum + Number(item.fxRate || 0), 0) / services.length : 0;
   const dashboardReceipts = getDashboardReceipts(invoices);
-  const totalReceived = dashboardReceipts.reduce((sum, receipt) => sum + Number(receipt.receipt_amount || 0), 0);
-  const openBalance = invoices.reduce((sum, invoice) => sum + Math.max(invoice.openBalance ?? invoice.total, 0), 0);
+
+  // V3.6.15: os cards financeiros são calculados por Invoice.
+  // Assim, títulos ainda não vencidos permanecem no Saldo em aberto e
+  // aparecem corretamente na parcela "a vencer".
+  const invoiceOpenBalance = (invoice) => {
+    const invoiceTotal = Math.max(Number(invoice.total || 0), 0);
+    const received = Math.max(Number(invoice.receivedAmount || 0), 0);
+    return Math.max(Number((invoiceTotal - Math.min(received, invoiceTotal)).toFixed(2)), 0);
+  };
+  const invoiceReceivedAmount = (invoice) => {
+    const invoiceTotal = Math.max(Number(invoice.total || 0), 0);
+    return Math.min(Math.max(Number(invoice.receivedAmount || 0), 0), invoiceTotal);
+  };
+
+  const totalReceived = invoices.reduce((sum, invoice) => sum + invoiceReceivedAmount(invoice), 0);
+  const openBalance = invoices.reduce((sum, invoice) => sum + invoiceOpenBalance(invoice), 0);
   const currentMonth = todayIso().slice(0, 7);
   const monthReceipts = dashboardReceipts
     .filter((receipt) => String(receipt.posted_date || "").startsWith(currentMonth))
     .reduce((sum, receipt) => sum + Number(receipt.receipt_amount || 0), 0);
-  const overdueInvoices = invoices.filter((invoice) => (invoice.financialStatus || "ABERTO") !== "PAGO" && (invoice.financialStatus || "ABERTO") !== "PAGO_COM_CREDITO" && invoice.dueDate < todayIso());
+
+  const openInvoices = invoices.filter((invoice) => (invoice.financialStatus || "ABERTO") !== "PAGO" && (invoice.financialStatus || "ABERTO") !== "PAGO_COM_CREDITO");
+  const overdueInvoices = openInvoices.filter((invoice) => invoice.dueDate && invoice.dueDate < todayIso());
   const lateClients = new Set(overdueInvoices.map((invoice) => invoice.client)).size;
+  const overdueValue = overdueInvoices.reduce((sum, invoice) => sum + invoiceOpenBalance(invoice), 0);
+  const toDueInvoices = openInvoices.filter((invoice) => !invoice.dueDate || invoice.dueDate >= todayIso());
+  const toDueValue = toDueInvoices.reduce((sum, invoice) => sum + invoiceOpenBalance(invoice), 0);
+  const safeOverdueValue = Math.max(Number(overdueValue.toFixed(2)), 0);
+  const receivedPct = total > 0 ? Math.min((totalReceived / total) * 100, 100) : 0;
+  const nfseCount = invoices.reduce((sum, invoice) => sum + (invoice.nfse || []).filter((n) => n.status === "autorizado" || n.numero).length, 0);
+  const billedClients = new Set(invoices.map((invoice) => invoice.client).filter(Boolean)).size;
 
   document.getElementById("kpiTotal").textContent = brl.format(total);
   document.getElementById("kpiReceived").textContent = brl.format(totalReceived);
@@ -1851,19 +1918,25 @@ function renderDashboard() {
   document.getElementById("kpiMonthReceipts").textContent = brl.format(monthReceipts);
   document.getElementById("kpiOverdue").textContent = overdueInvoices.length;
   document.getElementById("kpiLateClients").textContent = lateClients;
+  document.getElementById("kpiReceivedPct").textContent = `${numberFmt.format(receivedPct)}%`;
+  document.getElementById("kpiReceivedHint").textContent = `${numberFmt.format(receivedPct)}% do faturado`;
+  document.getElementById("kpiOverdueValue").textContent = brl.format(safeOverdueValue);
+  document.getElementById("kpiToDueValue").textContent = brl.format(toDueValue);
   document.getElementById("kpiInvoices").textContent = invoices.length;
-  document.getElementById("kpiHbl").textContent = new Set(invoices.map((invoice) => invoice.hbl)).size;
+  document.getElementById("kpiNfse").textContent = nfseCount;
+  document.getElementById("kpiHbl").textContent = new Set(invoices.map((invoice) => invoice.hbl).filter(Boolean)).size;
+  document.getElementById("kpiBilledClients").textContent = billedClients;
   document.getElementById("kpiFx").textContent = numberFmt.format(avgFx);
 
   const byClient = Object.values(invoices.reduce((acc, invoice) => {
     acc[invoice.client] ||= { label: invoice.client, value: 0 };
-    acc[invoice.client].value += invoice.total;
+    acc[invoice.client].value += Number(invoice.total || 0);
     return acc;
   }, {}));
 
   const byCurrency = Object.values(services.reduce((acc, service) => {
     acc[service.currency] ||= { label: service.currency, value: 0 };
-    acc[service.currency].value += service.brlValue;
+    acc[service.currency].value += Number(service.brlValue || 0);
     return acc;
   }, {}));
 
@@ -1871,11 +1944,11 @@ function renderDashboard() {
   document.getElementById("currencyCount").textContent = `${byCurrency.length} moedas`;
   renderBars("clientBars", byClient, "#166e6a");
   renderBars("currencyBars", byCurrency, "#b8422d");
-  renderAging(overdueInvoices);
+  renderAging(overdueInvoices.map((invoice) => ({ ...invoice, openBalance: invoiceOpenBalance(invoice) })), safeOverdueValue);
   renderClientHistory();
 }
 
-function renderAging(overdueInvoices = []) {
+function renderAging(overdueInvoices = [], dashboardOverdueValue = null) {
   const buckets = [
     { label: "0-30 dias", min: 0, max: 30, count: 0, value: 0 },
     { label: "31-60 dias", min: 31, max: 60, count: 0, value: 0 },
@@ -1889,10 +1962,21 @@ function renderAging(overdueInvoices = []) {
     const bucket = buckets.find((item) => days >= item.min && days <= item.max);
     if (!bucket) return;
     bucket.count += 1;
-    bucket.value += Math.max(invoice.openBalance ?? invoice.total, 0);
+    bucket.value += Math.max(Number(invoice.openBalance ?? invoice.total ?? 0), 0);
   });
+  const rawTotal = buckets.reduce((sum, bucket) => sum + bucket.value, 0);
+  const total = dashboardOverdueValue == null ? rawTotal : Math.min(rawTotal, dashboardOverdueValue);
+  if (rawTotal > 0 && total < rawTotal) {
+    const ratio = total / rawTotal;
+    buckets.forEach((bucket) => { bucket.value *= ratio; });
+  }
+  const label = document.getElementById("agingTotalLabel");
+  if (label) label.textContent = `${brl.format(total)} vencidos`;
   document.getElementById("agingTable").innerHTML = buckets
-    .map((bucket) => `<tr><td>${bucket.label}</td><td>${bucket.count}</td><td>${brl.format(bucket.value)}</td></tr>`)
+    .map((bucket) => {
+      const pct = total > 0 ? (bucket.value / total) * 100 : 0;
+      return `<tr><td><strong>${bucket.label}</strong></td><td>${bucket.count}</td><td>${brl.format(bucket.value)}</td><td><div class="aging-share"><span>${numberFmt.format(pct)}%</span><div class="aging-track"><i style="width:${Math.min(pct,100)}%"></i></div></div></td></tr>`;
+    })
     .join("");
 }
 
@@ -2387,7 +2471,11 @@ function renderReceivables() {
   const rows = getFilteredReceivables();
   document.getElementById("receivableCount").textContent = `${rows.length} títulos`;
   document.getElementById("receivablesTable").innerHTML = rows.length
-    ? rows.map((item) => `
+    ? rows.map((item) => {
+      const overdue = isReceivableOverdue(item);
+      const days = receivableDaysOverdue(item);
+      const last = latestCollectionFor(item);
+      return `
       <tr>
         <td>${escapeHtml(item.client)}</td>
         <td>${escapeHtml(item.hbl)}</td>
@@ -2395,19 +2483,73 @@ function renderReceivables() {
         <td>${brl.format(item.value)}</td>
         <td>${brl.format(item.receivedAmount || 0)}</td>
         <td>${brl.format(item.difference || 0)}</td>
-        <td>${brl.format(item.openBalance ?? item.value)}</td>
+        <td>${brl.format(receivableOpenBalance(item))}</td>
         <td>${formatDate(item.issueDate)}</td>
         <td>${formatDate(item.dueDate)}</td>
-        <td>${escapeHtml(item.category)}</td>
-        <td>${escapeHtml(item.costCenter)}</td>
+        <td><span class="status-pill ${overdue ? 'collection-overdue' : ''}">${overdue ? "Sim" : "Não"}</span></td>
+        <td>${overdue ? `${days} dia${days === 1 ? '' : 's'}` : "-"}</td>
+        <td>${last ? formatDate(String(last.sentAt).slice(0,10)) : "-"}</td>
         <td>${escapeHtml(item.financialStatus || "EM ABERTO")}</td>
-        <td>
+        <td class="receivable-actions">
           <button class="text-button" data-view-receivable="${escapeHtml(item.hbl)}">Invoice</button>
           <button class="text-button" data-view-nfse-receivable="${escapeHtml(item.hbl)}">${(state.invoices.find(inv => inv.hbl === item.hbl)?.nfse || []).length ? "NFS-e" : "NFS-e pendente"}</button>
+          ${overdue ? `<button class="primary-button compact-action" data-collect-receivable="${escapeHtml(item.hbl)}">Cobrar</button>` : ""}
         </td>
-      </tr>
-    `).join("")
-    : `<tr><td colspan="13" class="empty">Nenhum título encontrado.</td></tr>`;
+      </tr>`;
+    }).join("")
+    : `<tr><td colspan="14" class="empty">Nenhum título encontrado.</td></tr>`;
+}
+
+function collectionEmailBody(item, invoice) {
+  const number = item.invoiceNo || getInvoiceNo(invoice) || item.hbl;
+  return `Prezado(a),\n\nIdentificamos que a Invoice ${number}, referente ao HBL ${item.hbl}, com vencimento em ${formatDate(item.dueDate)}, permanece com saldo em aberto de ${brl.format(receivableOpenBalance(item))}.\n\nEncaminhamos a Invoice em anexo para conferência.\n\nDados para pagamento:\n${bankDetailsText(invoice?.bank || state.bank)}\n\nCaso o pagamento já tenha sido realizado, por gentileza desconsidere esta mensagem e, se possível, encaminhe o respectivo comprovante para que possamos realizar a baixa.\n\nPermanecemos à disposição.\n\nAtenciosamente,\nVanguard Logistics`;
+}
+
+function openCollectionModal(hbl) {
+  const item = state.receivables.find((row) => normalizeKey(row.hbl) === normalizeKey(hbl));
+  const invoice = state.invoices.find((row) => normalizeKey(row.hbl) === normalizeKey(hbl));
+  if (!item || !invoice) return window.alert("Não foi possível localizar a Invoice vinculada a este título.");
+  const existing = document.getElementById("collectionModal"); if (existing) existing.remove();
+  const count = collectionEventsFor(item).length + 1;
+  const modal = document.createElement("div");
+  modal.id = "collectionModal"; modal.className = "modal-backdrop";
+  modal.innerHTML = `<section class="modal collection-modal" role="dialog" aria-modal="true">
+    <div class="modal-bar"><div><p class="eyebrow">Cobrança assistida</p><h2>${count}ª cobrança · ${escapeHtml(item.invoiceNo || item.hbl)}</h2></div><button class="icon-button" id="collectionClose">×</button></div>
+    <div class="collection-summary">
+      <div><span>Cliente</span><strong>${escapeHtml(item.client)}</strong></div><div><span>Vencimento</span><strong>${formatDate(item.dueDate)}</strong></div>
+      <div><span>Dias em atraso</span><strong>${receivableDaysOverdue(item)}</strong></div><div><span>Saldo em aberto</span><strong>${brl.format(receivableOpenBalance(item))}</strong></div>
+    </div>
+    <div class="form-grid"><label>E-mail do cliente<input id="collectionTo" value="${escapeHtml(invoice.clientEmail || '')}" /></label><label>Assunto<input id="collectionSubject" value="Cobrança | Invoice ${escapeHtml(item.invoiceNo || item.hbl)} | Vanguard Logistics" /></label></div>
+    <label class="collection-message-label">Mensagem<textarea id="collectionBody" rows="14"></textarea></label>
+    <div class="collection-attachment">📎 Invoice ${escapeHtml(item.invoiceNo || item.hbl)} será anexada em PDF automaticamente.</div>
+    <div class="modal-actions collection-footer"><button class="secondary-button" id="collectionCancel">Cancelar</button><button class="secondary-button" id="collectionPreview">Visualizar Invoice</button><button class="primary-button" id="collectionSend">Enviar cobrança</button></div>
+  </section>`;
+  document.body.appendChild(modal);
+  modal.querySelector("#collectionBody").value = collectionEmailBody(item, invoice);
+  const close=()=>modal.remove(); modal.querySelector("#collectionClose").onclick=close; modal.querySelector("#collectionCancel").onclick=close;
+  modal.querySelector("#collectionPreview").onclick=()=>openInvoicePreview(invoice.hbl);
+  modal.querySelector("#collectionSend").onclick=()=>sendCollectionEmail(item, invoice, modal);
+}
+
+async function sendCollectionEmail(item, invoice, modal) {
+  const to = modal.querySelector("#collectionTo").value.trim();
+  const subject = modal.querySelector("#collectionSubject").value.trim();
+  const body = modal.querySelector("#collectionBody").value.trim();
+  if (!to || !subject || !body) return window.alert("Preencha destinatário, assunto e mensagem.");
+  if (!authToken) return window.alert("Sua sessão expirou. Faça login novamente.");
+  if (!window.jspdf?.jsPDF) return window.alert("Biblioteca de PDF não carregada.");
+  const button=modal.querySelector("#collectionSend"); button.disabled=true; button.textContent="Enviando...";
+  try {
+    const doc = await buildInvoicePdf({ ...invoice, status: "faturada" });
+    const pdfBase64 = doc.output("datauristring").split(",")[1];
+    const response = await fetch(SUPABASE_URL + "/functions/v1/send-invoice", {method:"POST",headers:{"Content-Type":"application/json","Authorization":"Bearer "+authToken},body:JSON.stringify({to,invoice,subject,body,pdfBase64})});
+    const payload = await response.json().catch(()=>({}));
+    if (!response.ok) throw new Error(payload.detail || payload.error || "Falha no envio da cobrança.");
+    state.collectionHistory ||= [];
+    state.collectionHistory.push({id:`collection-${Date.now()}`,hbl:item.hbl,invoiceNo:item.invoiceNo,client:item.client,to,amount:receivableOpenBalance(item),number:collectionEventsFor(item).length+1,sentAt:new Date().toISOString(),sentBy:currentUserEmail,status:"ENVIADA"});
+    addLog("success", `Cobrança enviada — ${item.invoiceNo || item.hbl}`, `${item.client} · ${brl.format(receivableOpenBalance(item))} · ${to}`);
+    save(); renderReceivables(); modal.remove(); window.alert("Cobrança enviada e registrada no histórico.");
+  } catch(error) { window.alert("Não foi possível enviar a cobrança: " + error.message); button.disabled=false; button.textContent="Enviar cobrança"; }
 }
 
 function receiptInvoice(receipt) {
@@ -2637,6 +2779,11 @@ document.getElementById("receivableSearchClient").addEventListener("input", (eve
   renderReceivables();
 });
 
+document.getElementById("receivableCollectionFilter")?.addEventListener("change", (event) => {
+  state.receivableCollectionFilter = event.target.value;
+  renderReceivables();
+});
+
 document.getElementById("receivableDateFrom").addEventListener("change", (event) => {
   state.receivableDateFrom = event.target.value;
   renderReceivables();
@@ -2650,6 +2797,9 @@ document.getElementById("receivableDateTo").addEventListener("change", (event) =
 document.getElementById("receivablesTable").addEventListener("click", (event) => {
   const hbl = event.target.dataset.viewReceivable;
   if (hbl) openInvoicePreview(hbl);
+
+  const collectHbl = event.target.dataset.collectReceivable;
+  if (collectHbl) openCollectionModal(collectHbl);
 
   const nfseHbl = event.target.dataset.viewNfseReceivable;
   if (nfseHbl) {
@@ -2975,7 +3125,7 @@ function openManualInvoiceModal() {
   modal.querySelector('#miAddService').onclick=addLine; addLine();
   modal.querySelector('#miSave').onclick=async()=>{const hbl=modal.querySelector('#miHbl').value.trim(), c=clients.find(x=>x.id===clientSel.value), err=modal.querySelector('#miError'); const lines=[...modal.querySelectorAll('#miServices .form-grid')];
     if(!hbl){err.style.display='block';err.textContent='Informe a HBL. Esta informação é obrigatória para criação da Invoice.';return;} if(!c){err.style.display='block';err.textContent='Selecione um cliente cadastrado.';return;} if((state.invoices||[]).some(i=>normalizeKey(i.hbl)===normalizeKey(hbl))){err.style.display='block';err.textContent='Já existe uma Invoice com esta HBL.';return;}
-    const rows=[]; for(const line of lines){const svc=services.find(x=>x.id===line.querySelector('.miSvc').value), amount=Number(line.querySelector('.miAmount').value||0);if(!svc||amount<=0)continue;rows.push({hbl_no:hbl,cliente:c.name,cnpj:c.cnpj||'Não informado',service_description:line.querySelector('.miDesc').value.trim()||svc.name,item_description:line.querySelector('.miItem').value.trim(),calculation_code:'FLAT',entered_amount:amount,entered_curr_total:amount,currency:line.querySelector('.miCurrency').value,issue_date:modal.querySelector('#miIssueDate').value||todayIso(),client_email:modal.querySelector('#miEmail').value.trim(),manual:true});}
+    const rows=[]; for(const line of lines){const svc=services.find(x=>x.id===line.querySelector('.miSvc').value), amount=Number(line.querySelector('.miAmount').value||0);if(!svc||amount<=0)continue;rows.push({hbl_no:hbl,cliente:c.name,cnpj:c.cnpj||'Não informado',service_description:line.querySelector('.miDesc').value.trim()||svc.name,item_description:line.querySelector('.miItem').value.trim(),calculation_code:'FLAT',entered_amount:amount,entered_curr_total:amount,currency:line.querySelector('.miCurrency').value,issue_date:modal.querySelector('#miIssueDate').value||todayIso(),client_email:modal.querySelector('#miEmail').value.trim(),manual:true,manual_due_date:modal.querySelector('#miDueDate').value||''});}
     if(!rows.length){err.style.display='block';err.textContent='Adicione ao menos um serviço com valor.';return;} await updateRatesForRows(rows); state.rows.push(...rows); consolidateInvoices(); const inv=state.invoices.find(i=>i.hbl===hbl);if(inv){inv.manual=true;inv.dueDate=modal.querySelector('#miDueDate').value||inv.dueDate;inv.clientEmail=modal.querySelector('#miEmail').value.trim();} addLog('success',`Invoice manual ${hbl} criada`,`${c.name} · ${rows.length} serviço(s)`);save();render();close();};
 }
 
@@ -3431,6 +3581,10 @@ function exportReceivablesReport() {
     { label: "Emissao", value: (item) => formatDate(item.issueDate) },
     { label: "Faturamento", value: (item) => formatDate(item.billedDate) },
     { label: "Vencimento", value: (item) => formatDate(item.dueDate) },
+    { label: "Vencido", value: (item) => isReceivableOverdue(item) ? "Sim" : "Não" },
+    { label: "Dias em atraso", value: (item) => receivableDaysOverdue(item) || "" },
+    { label: "Última cobrança", value: (item) => latestCollectionFor(item)?.sentAt ? formatDate(latestCollectionFor(item).sentAt.slice(0,10)) : "" },
+    { label: "Qtd. cobranças", value: (item) => collectionEventsFor(item).length },
     { label: "Categoria financeira", value: (item) => item.category },
     { label: "Centro de custo", value: (item) => item.costCenter },
     { label: "Status financeiro", value: (item) => item.financialStatus || "ABERTO" }
@@ -4483,7 +4637,7 @@ openManualInvoiceModal = function(existingHbl=null) {
   const fillClient=()=>{const c=clients.find(x=>x.id===clientSel.value);if(!c)return;modal.querySelector('#miCnpj').value=c.cnpj||'Não informado';if(!modal.querySelector('#miEmail').value)modal.querySelector('#miEmail').value=c.email||'';if(!modal.querySelector('#miDueDate').value){const d=new Date();d.setDate(d.getDate()+Number(c.dueDays||7));modal.querySelector('#miDueDate').value=d.toISOString().slice(0,10);}}; clientSel.onchange=fillClient; if(clientSel.value)fillClient();
   const addLine=(r=null)=>{const row=document.createElement('div');row.className='form-grid';row.style='border-top:1px solid var(--line);padding-top:12px;margin-top:8px';const svc=services.find(s=>normalizeKey(s.name)===normalizeKey(r?.service_description));row.innerHTML=`<label>Serviço *<select class="miSvc"><option value="">Selecione...</option>${services.map(s=>`<option value="${escapeHtml(s.id)}" ${svc?.id===s.id?'selected':''}>${escapeHtml(s.name)}</option>`).join('')}</select></label><label>Descrição<input class="miDesc" value="${escapeHtml(r?.service_description||'')}"/></label><label>Moeda<select class="miCurrency">${['BRL','USD','EUR','GBP','CAD','JPY'].map(c=>`<option ${c===(r?.currency||'BRL')?'selected':''}>${c}</option>`).join('')}</select></label><label>Valor original *<input class="miAmount" type="number" min="0" step="0.01" value="${Number(r?.entered_amount||r?.entered_curr_total||0)||''}"/></label><label>Item/Referência<input class="miItem" value="${escapeHtml(r?.item_description||'')}"/></label><label>Ação<button type="button" class="text-button miRemove">Remover</button></label>`;modal.querySelector('#miServices').appendChild(row);const sel=row.querySelector('.miSvc');sel.onchange=()=>{const s=services.find(x=>x.id===sel.value);row.querySelector('.miDesc').value=s?.invoiceDescription||s?.name||''};row.querySelector('.miRemove').onclick=()=>row.remove();};
   modal.querySelector('#miAddService').onclick=()=>addLine(); (existingRows.length?existingRows:[null]).forEach(addLine);
-  modal.querySelector('#miSave').onclick=()=>{const hbl=modal.querySelector('#miHbl').value.trim(),c=clients.find(x=>x.id===clientSel.value),err=modal.querySelector('#miError'),lines=[...modal.querySelectorAll('#miServices .form-grid')];if(!hbl||!c){err.style.display='block';err.textContent=!hbl?'Informe a HBL.':'Selecione um cliente.';return;}if(!existing&&(state.invoices||[]).some(i=>normalizeKey(i.hbl)===normalizeKey(hbl))){err.style.display='block';err.textContent='Já existe uma Invoice com esta HBL.';return;}const valid=lines.filter(l=>services.find(x=>x.id===l.querySelector('.miSvc').value)&&Number(l.querySelector('.miAmount').value||0)>0);if(!valid.length){err.style.display='block';err.textContent='Adicione ao menos um serviço com valor.';return;}const total=valid.reduce((a,l)=>a+Number(l.querySelector('.miAmount').value||0),0);const review=document.createElement('div');review.className='modal-backdrop';review.innerHTML=`<div class="modal-card" style="max-width:620px"><div class="modal-head"><div><p class="eyebrow">Revisão</p><h2>Revisar antes de concluir</h2></div></div><div class="panel"><p><b>Cliente:</b> ${escapeHtml(c.name)}</p><p><b>HBL:</b> ${escapeHtml(hbl)}</p><p><b>Serviços:</b> ${valid.length}</p><p><b>Valor original informado:</b> ${brl.format(total)}</p></div><div style="display:flex;justify-content:flex-end;gap:10px;margin-top:18px"><button class="secondary-button" id="revEdit">← Editar</button><button class="primary-button" id="revFinish">${existing?'Salvar alterações':'Concluir Invoice'}</button></div></div>`;document.body.appendChild(review);review.querySelector('#revEdit').onclick=()=>review.remove();review.querySelector('#revFinish').onclick=async()=>{const rows=[];for(const line of valid){const svc=services.find(x=>x.id===line.querySelector('.miSvc').value),amount=Number(line.querySelector('.miAmount').value||0);rows.push({hbl_no:hbl,cliente:c.name,cnpj:c.cnpj||'Não informado',service_description:line.querySelector('.miDesc').value.trim()||svc.name,item_description:line.querySelector('.miItem').value.trim(),calculation_code:'FLAT',entered_amount:amount,entered_curr_total:amount,currency:line.querySelector('.miCurrency').value,issue_date:modal.querySelector('#miIssueDate').value||todayIso(),client_email:modal.querySelector('#miEmail').value.trim(),manual:true});}await updateRatesForRows(rows);if(existing)state.rows=state.rows.filter(r=>normalizeKey(r.hbl_no||r.hbl)!==normalizeKey(existing.hbl));state.rows.push(...rows);consolidateInvoices();const inv=state.invoices.find(i=>normalizeKey(i.hbl)===normalizeKey(hbl));if(inv){inv.manual=true;inv.dueDate=modal.querySelector('#miDueDate').value||inv.dueDate;inv.clientEmail=modal.querySelector('#miEmail').value.trim();}addLog('success',`${existing?'Invoice manual alterada':'Invoice manual criada'} — ${hbl}`,c.name);save();render();review.remove();close();if(window.renderManualDocuments)renderManualDocuments();};};
+  modal.querySelector('#miSave').onclick=()=>{const hbl=modal.querySelector('#miHbl').value.trim(),c=clients.find(x=>x.id===clientSel.value),err=modal.querySelector('#miError'),lines=[...modal.querySelectorAll('#miServices .form-grid')];if(!hbl||!c){err.style.display='block';err.textContent=!hbl?'Informe a HBL.':'Selecione um cliente.';return;}if(!existing&&(state.invoices||[]).some(i=>normalizeKey(i.hbl)===normalizeKey(hbl))){err.style.display='block';err.textContent='Já existe uma Invoice com esta HBL.';return;}const valid=lines.filter(l=>services.find(x=>x.id===l.querySelector('.miSvc').value)&&Number(l.querySelector('.miAmount').value||0)>0);if(!valid.length){err.style.display='block';err.textContent='Adicione ao menos um serviço com valor.';return;}const total=valid.reduce((a,l)=>a+Number(l.querySelector('.miAmount').value||0),0);const review=document.createElement('div');review.className='modal-backdrop';review.innerHTML=`<div class="modal-card" style="max-width:620px"><div class="modal-head"><div><p class="eyebrow">Revisão</p><h2>Revisar antes de concluir</h2></div></div><div class="panel"><p><b>Cliente:</b> ${escapeHtml(c.name)}</p><p><b>HBL:</b> ${escapeHtml(hbl)}</p><p><b>Serviços:</b> ${valid.length}</p><p><b>Valor original informado:</b> ${brl.format(total)}</p></div><div style="display:flex;justify-content:flex-end;gap:10px;margin-top:18px"><button class="secondary-button" id="revEdit">← Editar</button><button class="primary-button" id="revFinish">${existing?'Salvar alterações':'Concluir Invoice'}</button></div></div>`;document.body.appendChild(review);review.querySelector('#revEdit').onclick=()=>review.remove();review.querySelector('#revFinish').onclick=async()=>{const rows=[];for(const line of valid){const svc=services.find(x=>x.id===line.querySelector('.miSvc').value),amount=Number(line.querySelector('.miAmount').value||0);rows.push({hbl_no:hbl,cliente:c.name,cnpj:c.cnpj||'Não informado',service_description:line.querySelector('.miDesc').value.trim()||svc.name,item_description:line.querySelector('.miItem').value.trim(),calculation_code:'FLAT',entered_amount:amount,entered_curr_total:amount,currency:line.querySelector('.miCurrency').value,issue_date:modal.querySelector('#miIssueDate').value||todayIso(),client_email:modal.querySelector('#miEmail').value.trim(),manual:true,manual_due_date:modal.querySelector('#miDueDate').value||''});}await updateRatesForRows(rows);if(existing)state.rows=state.rows.filter(r=>normalizeKey(r.hbl_no||r.hbl)!==normalizeKey(existing.hbl));state.rows.push(...rows);consolidateInvoices();const inv=state.invoices.find(i=>normalizeKey(i.hbl)===normalizeKey(hbl));if(inv){inv.manual=true;inv.dueDate=modal.querySelector('#miDueDate').value||inv.dueDate;inv.clientEmail=modal.querySelector('#miEmail').value.trim();}addLog('success',`${existing?'Invoice manual alterada':'Invoice manual criada'} — ${hbl}`,c.name);save();render();review.remove();close();if(window.renderManualDocuments)renderManualDocuments();};};
 };
 
 // Edição de NFS-e manual somente enquanto ainda não foi efetivamente emitida.

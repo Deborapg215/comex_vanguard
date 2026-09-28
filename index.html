@@ -81,16 +81,35 @@
             </div>
           </div>
 
-          <div class="kpi-grid">
-            <article class="kpi"><span>Total faturado</span><strong id="kpiTotal">R$ 0,00</strong></article>
-            <article class="kpi"><span>Total recebido</span><strong id="kpiReceived">R$ 0,00</strong></article>
-            <article class="kpi"><span>Saldo em aberto</span><strong id="kpiOpenBalance">R$ 0,00</strong></article>
-            <article class="kpi"><span>Recebimentos do m?s</span><strong id="kpiMonthReceipts">R$ 0,00</strong></article>
-            <article class="kpi"><span>T?tulos vencidos</span><strong id="kpiOverdue">0</strong></article>
-            <article class="kpi"><span>Clientes inadimplentes</span><strong id="kpiLateClients">0</strong></article>
-            <article class="kpi"><span>Invoices emitidas</span><strong id="kpiInvoices">0</strong></article>
-            <article class="kpi"><span>HBLs processados</span><strong id="kpiHbl">0</strong></article>
-            <article class="kpi"><span>Câmbio médio</span><strong id="kpiFx">0,0000</strong></article>
+          <div class="kpi-grid kpi-grid-primary">
+            <article class="kpi kpi-feature"><span>Total faturado</span><strong id="kpiTotal">R$ 0,00</strong><small>Faturamento no período filtrado</small></article>
+            <article class="kpi kpi-feature"><span>Total recebido</span><strong id="kpiReceived">R$ 0,00</strong><small id="kpiReceivedHint">0,0% do faturado</small></article>
+            <article class="kpi kpi-feature"><span>Saldo em aberto</span><strong id="kpiOpenBalance">R$ 0,00</strong><div class="kpi-split"><small><b id="kpiOverdueValue">R$ 0,00</b> vencido</small><small><b id="kpiToDueValue">R$ 0,00</b> a vencer</small></div></article>
+            <article class="kpi kpi-feature"><span>Recebimentos do mês</span><strong id="kpiMonthReceipts">R$ 0,00</strong><small>Entradas conciliadas no mês atual</small></article>
+          </div>
+
+          <div class="kpi-grid kpi-grid-secondary">
+            <article class="kpi kpi-compact"><span>Títulos vencidos</span><strong id="kpiOverdue">0</strong></article>
+            <article class="kpi kpi-compact"><span>Clientes com títulos vencidos</span><strong id="kpiLateClients">0</strong></article>
+            <article class="kpi kpi-compact"><span>% Recebido</span><strong id="kpiReceivedPct">0,0%</strong></article>
+            <article class="kpi kpi-compact"><span>Invoices emitidas</span><strong id="kpiInvoices">0</strong></article>
+            <article class="kpi kpi-compact"><span>NFS-e emitidas</span><strong id="kpiNfse">0</strong></article>
+            <article class="kpi kpi-compact"><span>HBLs processados</span><strong id="kpiHbl">0</strong></article>
+            <article class="kpi kpi-compact"><span>Clientes faturados</span><strong id="kpiBilledClients">0</strong></article>
+            <article class="kpi kpi-compact"><span>Câmbio médio</span><strong id="kpiFx">0,0000</strong></article>
+          </div>
+
+          <div class="panel aging-panel aging-panel-featured">
+            <div class="panel-head">
+              <div><h3>Aging list</h3><p class="muted aging-subtitle">Composição do saldo vencido por faixa de atraso</p></div>
+              <span id="agingTotalLabel">R$ 0,00 vencidos</span>
+            </div>
+            <div class="table-wrap">
+              <table class="aging-table">
+                <thead><tr><th>Faixa</th><th>Quantidade</th><th>Valor</th><th>Participação</th></tr></thead>
+                <tbody id="agingTable"></tbody>
+              </table>
+            </div>
           </div>
 
           <div class="dashboard-grid">
@@ -118,18 +137,6 @@
               <table>
                 <thead><tr><th>Invoice</th><th>Emissão</th><th>Vencimento</th><th>Status</th><th>Total</th></tr></thead>
                 <tbody id="clientHistory"></tbody>
-              </table>
-            </div>
-          </div>
-          <div class="panel">
-            <div class="panel-head">
-              <h3>Aging list</h3>
-              <span>Saldo vencido por faixa</span>
-            </div>
-            <div class="table-wrap">
-              <table>
-                <thead><tr><th>Faixa</th><th>Quantidade</th><th>Valor</th></tr></thead>
-                <tbody id="agingTable"></tbody>
               </table>
             </div>
           </div>
@@ -322,12 +329,13 @@
               <label>Cliente<input id="receivableSearchClient" placeholder="Buscar cliente" /></label>
               <label>Faturamento inicial<input id="receivableDateFrom" type="date" /></label>
               <label>Faturamento final<input id="receivableDateTo" type="date" /></label>
+              <label>Situação de cobrança<select id="receivableCollectionFilter"><option value="all">Todos</option><option value="due">A vencer</option><option value="overdue">Vencidos</option><option value="pending">Cobrança pendente</option></select></label>
             </div>
           </div>
           <div class="panel">
             <div class="table-wrap">
               <table>
-                <thead><tr><th>Cliente</th><th>HBL</th><th>Invoice</th><th>Valor faturado</th><th>Valor recebido</th><th>Diferença</th><th>Saldo</th><th>Emissão</th><th>Vencimento</th><th>Categoria</th><th>Centro de custo</th><th>Status</th><th>Ações</th></tr></thead>
+                <thead><tr><th>Cliente</th><th>HBL</th><th>Invoice</th><th>Valor faturado</th><th>Valor recebido</th><th>Diferença</th><th>Saldo</th><th>Emissão</th><th>Vencimento</th><th>Vencido</th><th>Dias em atraso</th><th>Última cobrança</th><th>Status</th><th>Ações</th></tr></thead>
                 <tbody id="receivablesTable"></tbody>
               </table>
             </div>
