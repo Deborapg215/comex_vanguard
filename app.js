@@ -978,7 +978,7 @@ async function renderUsersView() {
           <option value="operador" ${m.role === "operador" ? "selected" : ""}>Operador</option>
           <option value="admin" ${m.role === "admin" ? "selected" : ""}>Administrador Vanguard</option>
         </select>`}</td>
-        <td><span class="status-pill">${status}</span></td>
+        <td><span class="status-pill" style="${m.active === false ? 'background:#fee2e2;color:#b91c1c;border:1px solid #fecaca;' : ''}">${status}</span></td>
         <td>${m.created_at ? new Date(m.created_at).toLocaleDateString("pt-BR") : "-"}</td>
         <td>${protectedOwner ? '<span style="color:var(--muted);font-size:.8rem">Protegido</span>' : self ? '<span style="color:var(--muted);font-size:.8rem">Você</span>' : `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">${!m.user_id && m.active !== false ? `<button class="text-button" data-resend-invite="${m.id}" data-email="${escapeHtml(m.email)}">Reenviar convite</button>` : ""}${m.user_id && m.active !== false ? `<button class="text-button" data-reset-password="${m.id}" data-email="${escapeHtml(m.email)}">Redefinir senha</button>` : ""}<button class="text-button" data-toggle-member="${m.id}" data-active="${m.active === false ? "false" : "true"}">${m.active === false ? "Ativar" : "Desativar"}</button></div>`}</td>
       </tr>`;
@@ -1800,12 +1800,45 @@ function getDashboardReceipts(invoices = getDashboardInvoices()) {
   });
 }
 
+function isReceivableCancelled(item) {
+  return String(item?.financialStatus || "").toUpperCase() === "CANCELADO" || String(item?.status || "").toLowerCase() === "cancelado";
+}
+
 function receivableOpenBalance(item) {
+  if (isReceivableCancelled(item)) return 0;
   return Math.max(0, Number(item.openBalance ?? (Number(item.value || 0) - Number(item.receivedAmount || 0))));
 }
 
 function isReceivableOverdue(item) {
-  return Boolean(item.dueDate) && item.dueDate < todayIso() && receivableOpenBalance(item) > 0;
+  return !isReceivableCancelled(item) && Boolean(item.dueDate) && item.dueDate < todayIso() && receivableOpenBalance(item) > 0;
+}
+
+function cancelReceivableForNfse(ref, hbl, reason = "") {
+  const item = state.receivables.find(row => row.source === "nfse" && row.nfseRef === ref);
+  if (!item) return { changed: false, reason: "not_found" };
+  if (Number(item.receivedAmount || 0) > 0) {
+    item.cancellationReviewRequired = true;
+    item.cancellationReviewReason = `NFS-e ${ref} cancelada, porém o título possui recebimento e exige análise manual.`;
+    return { changed: true, reason: "received" };
+  }
+  item.financialStatus = "CANCELADO";
+  item.status = "cancelado";
+  item.openBalance = 0;
+  item.cancelledAt = new Date().toISOString();
+  item.cancelledByNfseRef = ref;
+  item.cancellationReason = reason || `Cancelado automaticamente devido ao cancelamento da NFS-e vinculada (${ref}).`;
+  return { changed: true, reason: "cancelled" };
+}
+
+function reconcileCancelledNfseReceivables() {
+  let changed = false;
+  (state.invoices || []).forEach(inv => {
+    (inv.nfse || []).filter(n => n.status === "cancelado").forEach(n => {
+      const result = cancelReceivableForNfse(n.ref, inv.hbl);
+      if (result.changed) changed = true;
+    });
+  });
+  if (changed) save();
 }
 
 function receivableDaysOverdue(item) {
@@ -2096,7 +2129,7 @@ function seedMasterDataFromOperation() {
     if (!c.name) return;
     const key = normalizeKey((c.cnpj && c.cnpj !== "Não informado") ? c.cnpj : c.name);
     if (!key || clientKeys.has(key)) return;
-    state.masterClients.push({id:`AUTO-CLI-${Date.now()}-${i}`,code:"",name:c.name,tradeName:"",cnpj:c.cnpj || "Não informado",municipalRegistration:"",stateRegistration:"",email:c.email || "",phone:"",address:"",city:"",uf:"",cep:"",dueDays:Number(c.dueDays || 7),status:"ativo",origin:"operacao"});
+    state.masterClients.push({id:`AUTO-CLI-${Date.now()}-${i}`,code:"",name:c.name,tradeName:"",cnpj:c.cnpj || "Não informado",municipalRegistration:"",stateRegistration:"",email:c.email || "",phone:"",address:"",number:"",complement:"",neighborhood:"",city:"",uf:"",cep:"",ibgeCode:"",irrf:false,irrfRate:0,dueDays:Number(c.dueDays || 7),status:"ativo",origin:"operacao"});
     clientKeys.add(key);
   });
   const svcKeys = new Set(state.servicesCatalog.map(s => normalizeKey(s.name)));
@@ -2114,7 +2147,19 @@ function seedMasterDataFromOperation() {
 function renderMasterClients() {
   const body = document.getElementById("masterClientsTable");
   if (!body) return;
-  body.innerHTML = (state.masterClients || []).map((client) => `
+  const searchNode = document.getElementById("masterClientSearch");
+  const statusNode = document.getElementById("masterClientStatusFilter");
+  const search = normalizeKey(searchNode?.value || "");
+  const status = statusNode?.value || "todos";
+  const clients = (state.masterClients || []).filter(client => {
+    const haystack = normalizeKey(`${client.name || ""} ${client.tradeName || ""} ${client.cnpj || ""} ${(client.cnpj || "").replace(/\D/g, "")}`);
+    const searchDigits = (searchNode?.value || "").replace(/\D/g, "");
+    const cnpjDigits = (client.cnpj || "").replace(/\D/g, "");
+    const matchesSearch = !search || haystack.includes(search) || (searchDigits && cnpjDigits.includes(searchDigits));
+    const matchesStatus = status === "todos" || String(client.status || "ativo") === status;
+    return matchesSearch && matchesStatus;
+  });
+  body.innerHTML = clients.map((client) => `
     <tr>
       <td>${escapeHtml(client.code || "-")}</td><td>${escapeHtml(client.name || "")}</td><td>${escapeHtml(client.tradeName || "-")}</td>
       <td>${escapeHtml(client.cnpj || "-")}</td><td>${escapeHtml(client.email || "-")}</td><td>${escapeHtml(client.city || "-")}/${escapeHtml(client.uf || "-")}</td>
@@ -2468,6 +2513,7 @@ function renderBilled() {
 }
 
 function renderReceivables() {
+  reconcileCancelledNfseReceivables();
   const rows = getFilteredReceivables();
   document.getElementById("receivableCount").textContent = `${rows.length} títulos`;
   document.getElementById("receivablesTable").innerHTML = rows.length
@@ -2489,11 +2535,11 @@ function renderReceivables() {
         <td><span class="status-pill ${overdue ? 'collection-overdue' : ''}">${overdue ? "Sim" : "Não"}</span></td>
         <td>${overdue ? `${days} dia${days === 1 ? '' : 's'}` : "-"}</td>
         <td>${last ? formatDate(String(last.sentAt).slice(0,10)) : "-"}</td>
-        <td>${escapeHtml(item.financialStatus || "EM ABERTO")}</td>
+        <td>${isReceivableCancelled(item) ? `<span class="chip bad">CANCELADO</span>` : escapeHtml(item.financialStatus || "EM ABERTO")}${item.cancellationReviewRequired ? `<div style="font-size:0.72rem;color:var(--bad);margin-top:4px;">⚠ Análise manual</div>` : ""}</td>
         <td class="receivable-actions">
           <button class="text-button" data-view-receivable="${escapeHtml(item.hbl)}">Invoice</button>
           <button class="text-button" data-view-nfse-receivable="${escapeHtml(item.hbl)}">${(state.invoices.find(inv => inv.hbl === item.hbl)?.nfse || []).length ? "NFS-e" : "NFS-e pendente"}</button>
-          ${overdue ? `<button class="primary-button compact-action" data-collect-receivable="${escapeHtml(item.hbl)}">Cobrar</button>` : ""}
+          ${overdue && !isReceivableCancelled(item) ? `<button class="primary-button compact-action" data-collect-receivable="${escapeHtml(item.hbl)}">Cobrar</button>` : ""}
         </td>
       </tr>`;
     }).join("")
@@ -3007,6 +3053,27 @@ document.getElementById("deleteSelectedClients").addEventListener("click", () =>
 });
 
 
+const lookupMasterClientCnpjBtn = document.getElementById("lookupMasterClientCnpj");
+if (lookupMasterClientCnpjBtn) lookupMasterClientCnpjBtn.addEventListener("click", async () => {
+  const raw = document.getElementById("masterClientCnpj").value.replace(/\D/g, "");
+  if (raw.length !== 14) { alert("Informe um CNPJ válido com 14 dígitos."); return; }
+  lookupMasterClientCnpjBtn.disabled = true; lookupMasterClientCnpjBtn.textContent = "Buscando...";
+  try {
+    const r = await fetch(`https://brasilapi.com.br/api/cnpj/v1/${raw}`);
+    if (!r.ok) throw new Error("CNPJ não localizado na consulta cadastral.");
+    const d = await r.json();
+    const set = (id, value) => { const el=document.getElementById(id); if(el && value!==undefined && value!==null) el.value=String(value); };
+    set("masterClientName", d.razao_social || ""); set("masterClientTradeName", d.nome_fantasia || "");
+    set("masterClientEmail", d.email || ""); set("masterClientPhone", d.ddd_telefone_1 || "");
+    set("masterClientAddress", [d.descricao_tipo_de_logradouro,d.logradouro].filter(Boolean).join(" "));
+    set("masterClientNumber", d.numero || ""); set("masterClientComplement", d.complemento || ""); set("masterClientNeighborhood", d.bairro || "");
+    set("masterClientCity", d.municipio || ""); set("masterClientUf", d.uf || ""); set("masterClientCep", d.cep || "");
+    set("masterClientIbge", d.codigo_municipio_ibge || "");
+    addLog("success", "CNPJ consultado", `${d.razao_social || raw} — confira os dados antes de salvar.`);
+  } catch(e) { alert(e.message + "\n\nPreencha o cadastro manualmente se necessário."); }
+  finally { lookupMasterClientCnpjBtn.disabled=false; lookupMasterClientCnpjBtn.textContent="🔎 Buscar CNPJ"; }
+});
+
 const saveMasterClientBtn = document.getElementById("saveMasterClient");
 if (saveMasterClientBtn) saveMasterClientBtn.addEventListener("click", () => {
   const id = document.getElementById("masterClientId").value || `CLI-${Date.now()}`;
@@ -3015,25 +3082,34 @@ if (saveMasterClientBtn) saveMasterClientBtn.addEventListener("click", () => {
     tradeName: document.getElementById("masterClientTradeName").value.trim(), cnpj: document.getElementById("masterClientCnpj").value.trim(),
     municipalRegistration: document.getElementById("masterClientIM").value.trim(), stateRegistration: document.getElementById("masterClientIE").value.trim(),
     email: document.getElementById("masterClientEmail").value.trim(), phone: document.getElementById("masterClientPhone").value.trim(),
-    address: document.getElementById("masterClientAddress").value.trim(), city: document.getElementById("masterClientCity").value.trim(),
-    uf: document.getElementById("masterClientUf").value.trim().toUpperCase(), cep: document.getElementById("masterClientCep").value.trim(),
+    address: document.getElementById("masterClientAddress").value.trim(), number: document.getElementById("masterClientNumber").value.trim(),
+    complement: document.getElementById("masterClientComplement").value.trim(), neighborhood: document.getElementById("masterClientNeighborhood").value.trim(),
+    city: document.getElementById("masterClientCity").value.trim(), uf: document.getElementById("masterClientUf").value.trim().toUpperCase(),
+    cep: document.getElementById("masterClientCep").value.trim(), ibgeCode: document.getElementById("masterClientIbge").value.trim(),
+    irrf: document.getElementById("masterClientIrrf").value === "true", irrfRate: Number(document.getElementById("masterClientIrrfRate").value || 0),
     dueDays: Number(document.getElementById("masterClientDue").value || 7), status: document.getElementById("masterClientStatus").value
   };
   if (!client.name) { addLog("error", "Cliente não salvo", "Informe a Razão Social."); render(); return; }
   state.masterClients ||= [];
   state.masterClients = state.masterClients.filter((x) => x.id !== id);
   state.masterClients.push(client);
-  ["masterClientId","masterClientCode","masterClientName","masterClientTradeName","masterClientCnpj","masterClientIM","masterClientIE","masterClientEmail","masterClientPhone","masterClientAddress","masterClientCity","masterClientUf","masterClientCep"].forEach(x => document.getElementById(x).value="");
-  document.getElementById("masterClientDue").value=7; document.getElementById("masterClientStatus").value="ativo";
+  ["masterClientId","masterClientCode","masterClientName","masterClientTradeName","masterClientCnpj","masterClientIM","masterClientIE","masterClientEmail","masterClientPhone","masterClientAddress","masterClientNumber","masterClientComplement","masterClientNeighborhood","masterClientCity","masterClientUf","masterClientCep","masterClientIbge"].forEach(x => document.getElementById(x).value="");
+  document.getElementById("masterClientDue").value=7; document.getElementById("masterClientStatus").value="ativo"; document.getElementById("masterClientIrrf").value="false"; document.getElementById("masterClientIrrfRate").value=0;
   addLog("success", "Cadastro de cliente salvo", client.name); render();
 });
+
+const masterClientSearch=document.getElementById("masterClientSearch");
+if(masterClientSearch) masterClientSearch.addEventListener("input", renderMasterClients);
+const masterClientStatusFilter=document.getElementById("masterClientStatusFilter");
+if(masterClientStatusFilter) masterClientStatusFilter.addEventListener("change", renderMasterClients);
+
 const masterTable=document.getElementById("masterClientsTable");
 if (masterTable) masterTable.addEventListener("click", (event) => {
   const edit=event.target.dataset.editMasterClient, del=event.target.dataset.deleteMasterClient;
   if (del) { const c=state.masterClients.find(x=>x.id===del); if(c && confirm(`Excluir ${c.name}?`)){state.masterClients=state.masterClients.filter(x=>x.id!==del); addLog("success","Cliente excluído",c.name); render();} return; }
   if (!edit) return; const c=state.masterClients.find(x=>x.id===edit); if(!c)return;
-  const map={masterClientId:'id',masterClientCode:'code',masterClientName:'name',masterClientTradeName:'tradeName',masterClientCnpj:'cnpj',masterClientIM:'municipalRegistration',masterClientIE:'stateRegistration',masterClientEmail:'email',masterClientPhone:'phone',masterClientAddress:'address',masterClientCity:'city',masterClientUf:'uf',masterClientCep:'cep',masterClientDue:'dueDays',masterClientStatus:'status'};
-  Object.entries(map).forEach(([el,key])=>document.getElementById(el).value=c[key]??'');
+  const map={masterClientId:'id',masterClientCode:'code',masterClientName:'name',masterClientTradeName:'tradeName',masterClientCnpj:'cnpj',masterClientIM:'municipalRegistration',masterClientIE:'stateRegistration',masterClientEmail:'email',masterClientPhone:'phone',masterClientAddress:'address',masterClientNumber:'number',masterClientComplement:'complement',masterClientNeighborhood:'neighborhood',masterClientCity:'city',masterClientUf:'uf',masterClientCep:'cep',masterClientIbge:'ibgeCode',masterClientIrrf:'irrf',masterClientIrrfRate:'irrfRate',masterClientDue:'dueDays',masterClientStatus:'status'};
+  Object.entries(map).forEach(([el,key])=>{ const node=document.getElementById(el); if(!node)return; node.value=(key==='irrf'?String(Boolean(c[key])):(c[key]??'')); });
 });
 
 const saveServiceBtn=document.getElementById("saveServiceCatalog");
@@ -3808,8 +3884,7 @@ async function buildInvoicePdf(invoice) {
 
 
 // ── Módulo NFS-e — Focus NFe ─────────────────────────────────
-const FOCUS_NFE_TOKEN = "pBRwQocstuaDX4Zg0ZLaOZdqVnMg45wF";
-const FOCUS_NFE_URL = "https://homologacao.focusnfe.com.br/v2";
+const NFSE_AMBIENTE = "PRODUÇÃO";
 // Proxy Supabase Edge Function (resolve CORS)
 const FOCUS_NFE_PROXY = "https://xqyxhfwzqgogruufixbr.supabase.co/functions/v1/rapid-responder";
 
@@ -3822,34 +3897,34 @@ const NFSE_PRESTADOR = {
 const NFSE_SERVICOS = {
   "Serviço de Importação": {
     item_lista_servico: "10.06",
-    codigo_tributario_municipio: "000001",
+    codigo_tributario_municipio: "523200001",
+    codigo_nbs: "105022900",
+    codigo_indicador_operacao: "100301",
     descricao_base: "VALOR REFERENTE A TAXAS LOCAIS DE IMPORTACAO MARITIMA BL"
   },
   "Serviço de Exportação": {
     item_lista_servico: "10.06",
-    codigo_tributario_municipio: "000001",
+    codigo_tributario_municipio: "523200001",
+    codigo_nbs: "105022900",
+    codigo_indicador_operacao: "100301",
     descricao_base: "VALOR REFERENTE A TAXAS LOCAIS DE EXPORTACAO MARITIMA BL"
   },
   "Serviço Aéreo": {
     item_lista_servico: "10.06",
-    codigo_tributario_municipio: "000001",
+    codigo_tributario_municipio: "523200001",
+    codigo_nbs: "105022900",
+    codigo_indicador_operacao: "100301",
     descricao_base: "VALOR REFERENTE A TAXAS LOCAIS DE IMPORTACAO AEREA BL"
   }
 };
 
-function nfseAuthHeader() {
-  return "Basic " + btoa(FOCUS_NFE_TOKEN + ":");
-}
-
 async function focusProxyFetch(path, options = {}) {
-  const url = FOCUS_NFE_URL + path;
-  const response = await fetch(FOCUS_NFE_PROXY, {
+  const proxyUrl = `${FOCUS_NFE_PROXY}?path=${encodeURIComponent(path)}`;
+  const response = await fetch(proxyUrl, {
     method: options.method || "GET",
     headers: {
       "Content-Type": "application/json",
-      "Authorization": "Bearer " + authToken,
-      "X-Focus-Token": FOCUS_NFE_TOKEN,
-      "X-Focus-Url": url
+      "Authorization": "Bearer " + authToken
     },
     body: options.body || undefined
   });
@@ -3858,20 +3933,42 @@ async function focusProxyFetch(path, options = {}) {
   catch { return { ok: response.ok, status: response.status, data: { mensagem: text } }; }
 }
 
-async function emitirNfse(invoice, tipoServico, valorServico, hblRef, servicosSelecionados) {
+function getMasterClientForInvoice(invoice) {
+  const cnpj = (invoice.cnpj || "").replace(/\D/g, "");
+  return (state.masterClients || []).find(c => (c.cnpj || "").replace(/\D/g, "") === cnpj);
+}
+function validateNfseClient(invoice) {
+  const c = getMasterClientForInvoice(invoice);
+  if (!c) return {ok:false, message:"Cliente não localizado no cadastro mestre. Cadastre/complete o cliente antes da emissão."};
+  const required = [["CNPJ",c.cnpj],["Razão Social",c.name],["Logradouro",c.address],["Número",c.number],["Bairro",c.neighborhood],["CEP",c.cep],["Município",c.city],["UF",c.uf],["Código IBGE",c.ibgeCode]];
+  const missing=required.filter(([,v])=>!String(v||"").trim()).map(([n])=>n);
+  if(missing.length) return {ok:false, client:c, message:`Cadastro incompleto para NFS-e: ${missing.join(", ")}.`};
+  return {ok:true, client:c};
+}
+
+async function emitirNfse(invoice, tipoServico, valorServico, hblRef, servicosSelecionados, fiscalOverrides = {}) {
   const servico = NFSE_SERVICOS[tipoServico] || NFSE_SERVICOS["Serviço de Importação"];
   const ref = "VANG-" + invoice.hbl.replace(/[^a-zA-Z0-9]/g, "").slice(0, 20) + "-" + Date.now();
 
   const valorPis    = Math.round(valorServico * 0.0065 * 100) / 100;
   const valorCofins = Math.round(valorServico * 0.03   * 100) / 100;
   const valorIss    = Math.round(valorServico * 0.03   * 100) / 100;
-  const cnpjTomador = (invoice.cnpj || "").replace(/[^0-9]/g, "");
+  const validation = validateNfseClient(invoice);
+  if (!validation.ok) throw new Error(validation.message);
+  const clienteFiscal = validation.client;
+  const cnpjTomador = (clienteFiscal.cnpj || invoice.cnpj || "").replace(/[^0-9]/g, "");
+  const tomadorSantos = String(clienteFiscal.ibgeCode) === "3548500";
+  const issRetido = fiscalOverrides.issMode === "sim" ? true : fiscalOverrides.issMode === "nao" ? false : tomadorSantos;
+  const irrfAtivo = fiscalOverrides.irrf !== undefined ? Boolean(fiscalOverrides.irrf) : Boolean(clienteFiscal.irrf);
+  const irrfRate = Number(fiscalOverrides.irrfRate !== undefined ? fiscalOverrides.irrfRate : (clienteFiscal.irrfRate || 0));
+  const valorIr = irrfAtivo ? Math.round(valorServico * (irrfRate / 100) * 100) / 100 : 0;
 
   // Discriminação: lista os serviços selecionados
   const listaServicos = (servicosSelecionados || [])
     .map(s => s.service_description + " " + brl.format(s.brlValue))
     .join(" | ");
-  const discriminacao = `${servico.descricao_base} ${hblRef || invoice.hbl}${listaServicos ? " | " + listaServicos : ""}`;
+  const discriminacaoPadrao = `${servico.descricao_base} ${hblRef || invoice.hbl}${listaServicos ? " | " + listaServicos : ""}`;
+  const discriminacao = String(fiscalOverrides.discriminacao || discriminacaoPadrao).trim();
 
   const payload = {
     data_emissao: new Date().toISOString().slice(0, 19) + "-0300",
@@ -3880,7 +3977,11 @@ async function emitirNfse(invoice, tipoServico, valorServico, hblRef, servicosSe
     // Vanguard é Lucro Presumido — regime_especial_tributacao não se aplica
     consumidor_final: 0,
     indicador_destinatario: 0,
-    percentual_total_tributos_simples_nacional: 0.0,
+    // Carga tributária aproximada exigida pelo GISS/Santos (E160).
+    // As NFS-e reais fornecidas exibem 0,00% para Federal/Estadual/Municipal.
+    percentual_total_tributos_federais: 0.0,
+    percentual_total_tributos_estaduais: 0.0,
+    percentual_total_tributos_municipais: 0.0,
     prestador: {
       cnpj: NFSE_PRESTADOR.cnpj,
       inscricao_municipal: NFSE_PRESTADOR.inscricao_municipal,
@@ -3888,8 +3989,18 @@ async function emitirNfse(invoice, tipoServico, valorServico, hblRef, servicosSe
     },
     tomador: {
       cnpj: cnpjTomador || undefined,
-      razao_social: invoice.client.slice(0, 115),
-      email: invoice.clientEmail ? invoice.clientEmail.slice(0, 80) : undefined
+      inscricao_municipal: clienteFiscal.municipalRegistration || undefined,
+      razao_social: (clienteFiscal.name || invoice.client).slice(0, 115),
+      email: (clienteFiscal.email || invoice.clientEmail || "").slice(0, 80) || undefined,
+      endereco: {
+        logradouro: clienteFiscal.address,
+        numero: clienteFiscal.number,
+        complemento: clienteFiscal.complement || undefined,
+        bairro: clienteFiscal.neighborhood,
+        codigo_municipio: Number(clienteFiscal.ibgeCode),
+        uf: clienteFiscal.uf,
+        cep: String(clienteFiscal.cep || "").replace(/\D/g, "")
+      }
     },
     servico: {
       discriminacao: discriminacao.slice(0, 2000),
@@ -3897,12 +4008,23 @@ async function emitirNfse(invoice, tipoServico, valorServico, hblRef, servicosSe
       aliquota: 3.0,
       item_lista_servico: servico.item_lista_servico,
       codigo_tributario_municipio: servico.codigo_tributario_municipio,
-      codigo_nbs: "118029000",
-      codigo_indicador_operacao: "050101",
+      codigo_nbs: servico.codigo_nbs,
+      codigo_indicador_operacao: servico.codigo_indicador_operacao,
       ibs_cbs_situacao_tributaria: "000",
       ibs_cbs_classificacao_tributaria: "000001",
       codigo_municipio_incidencia: 3548500,
-      iss_retido: true
+      iss_retido: issRetido,
+      responsavel_retencao: issRetido ? 1 : undefined,
+      valor_ir: valorIr || undefined,
+      // PIS/COFINS (apuração própria): o GISS valida valor = base x alíquota.
+      // A base é enviada explicitamente para manter os três campos coerentes.
+      base_calculo_pis_cofins: valorServico,
+      aliquota_pis: 0.65,
+      aliquota_cofins: 3.0,
+      valor_pis: valorPis,
+      valor_cofins: valorCofins,
+      situacao_tributaria_pis_cofins: "01",
+      tipo_retencao_pis_cofins: 0
     }
   };
 
@@ -3964,7 +4086,7 @@ function renderNfseModal(invoice) {
       <div class="modal-bar">
         <div>
           <p class="eyebrow">Emissão Fiscal</p>
-          <h2>Emitir NFS-e</h2>
+          <h2>Emitir NFS-e <span style="font-size:0.68rem;background:#b42318;color:white;padding:3px 7px;border-radius:10px;vertical-align:middle;">PRODUÇÃO</span></h2>
         </div>
         <button class="icon-button" id="closeNfseModal">✕</button>
       </div>
@@ -4018,10 +4140,7 @@ function renderNfseModal(invoice) {
         </div>
       </div>
 
-      <div style="background:#f4f7f8;border-radius:7px;padding:10px 14px;margin-bottom:14px;font-size:0.82rem;color:var(--muted);">
-        <strong style="color:var(--ink);">Tributos sobre o valor selecionado:</strong>
-        ISS 3% • PIS 0,65% • COFINS 3% • ISS retido na fonte
-      </div>
+      <div id="nfseFiscalPreview" style="background:#fff7ed;border:1px solid #fed7aa;border-radius:7px;padding:10px 14px;margin-bottom:14px;font-size:0.82rem;color:var(--ink);"></div>
 
       <div style="background:#fff;border:1px solid var(--line);border-radius:8px;padding:12px 14px;margin-bottom:14px;">
         <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;">
@@ -4046,6 +4165,39 @@ function renderNfseModal(invoice) {
   const closeModal = () => modal.remove();
   document.getElementById("closeNfseModal").addEventListener("click", closeModal);
   document.getElementById("closeNfseModal2").addEventListener("click", closeModal);
+  const fiscalValidation = validateNfseClient(invoice);
+  const fiscalPreview = document.getElementById("nfseFiscalPreview");
+  if (!fiscalValidation.ok) {
+    fiscalPreview.innerHTML = `<strong>⚠ Cadastro fiscal incompleto.</strong><br>${escapeHtml(fiscalValidation.message)}<br><span style="color:var(--bad)">A emissão ficará bloqueada até o cadastro ser completado.</span>`;
+    document.getElementById("btnEmitirNfse").disabled = true;
+  } else {
+    const c=fiscalValidation.client, santos=String(c.ibgeCode)==="3548500";
+    const servicoInicial = NFSE_SERVICOS[document.getElementById("nfseTipoServico").value] || NFSE_SERVICOS["Serviço de Importação"];
+    const listaInicial = servicos.filter(x=>x.selecionado).map(x => x.service_description + " " + brl.format(x.brlValue)).join(" | ");
+    const descricaoInicial = `${servicoInicial.descricao_base} ${invoice.hbl}${listaInicial ? " | " + listaInicial : ""}`;
+    fiscalPreview.innerHTML = `<strong>Conferência fiscal / Dados da NFS-e — PRODUÇÃO</strong>
+      <label style="display:grid;gap:5px;margin-top:9px;font-weight:750;">Descrição da NFS-e
+        <textarea id="nfseDescricaoFiscal" rows="3" style="width:100%;border:1px solid var(--line);border-radius:7px;padding:8px;resize:vertical;">${escapeHtml(descricaoInicial)}</textarea>
+      </label>
+      <div style="margin-top:8px;">Município do tomador: ${escapeHtml(c.city)}/${escapeHtml(c.uf)} · IBGE ${escapeHtml(c.ibgeCode)}</div>
+      <div>Serviço: 10.06 · Cód. Municipal 523200001 · NBS 1.0502.29.00 · ISS 3%</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:9px;">
+        <label style="display:grid;gap:4px;font-weight:750;">ISS retido
+          <select id="nfseIssMode" style="min-height:36px;border:1px solid var(--line);border-radius:7px;padding:6px;"><option value="auto">Automático (${santos?"SIM":"NÃO"})</option><option value="sim">Sim</option><option value="nao">Não</option></select>
+        </label>
+        <label style="display:grid;gap:4px;font-weight:750;">IRRF
+          <select id="nfseIrrf" style="min-height:36px;border:1px solid var(--line);border-radius:7px;padding:6px;"><option value="false" ${!c.irrf?"selected":""}>Não</option><option value="true" ${c.irrf?"selected":""}>Sim</option></select>
+        </label>
+        <label style="display:grid;gap:4px;font-weight:750;">Alíquota IRRF (%)
+          <input id="nfseIrrfRate" type="number" min="0" step="0.01" value="${Number(c.irrfRate||1.5)}" style="min-height:36px;border:1px solid var(--line);border-radius:7px;padding:6px;" ${c.irrf?"":"disabled"} />
+        </label>
+      </div>
+      <div id="nfseIrrfValor" style="margin-top:6px;font-weight:750;">IRRF calculado: ${c.irrf ? brl.format(Math.round(calcularTotal()*(Number(c.irrfRate||1.5)/100)*100)/100) : brl.format(0)}</div>
+      <span style="display:block;margin-top:8px;color:#b42318;font-weight:800">Esta emissão será enviada ao ambiente de PRODUÇÃO e poderá gerar NFS-e com validade fiscal.</span>`;
+    const irrfSel=document.getElementById("nfseIrrf"), irrfRate=document.getElementById("nfseIrrfRate"), irrfValor=document.getElementById("nfseIrrfValor");
+    const refreshIrrf=()=>{ const ativo=irrfSel.value==="true"; irrfRate.disabled=!ativo; const v=ativo?Math.round(calcularTotal()*(Number(irrfRate.value||0)/100)*100)/100:0; irrfValor.textContent=`IRRF calculado: ${brl.format(v)}`; };
+    irrfSel.addEventListener("change",refreshIrrf); irrfRate.addEventListener("input",refreshIrrf);
+  }
 
   // Atualizar seleção ao marcar/desmarcar
   modal.querySelector("#nfseServicosBody").addEventListener("change", (e) => {
@@ -4055,6 +4207,8 @@ function renderNfseModal(invoice) {
     const row = e.target.closest("tr");
     if (row) row.style.background = e.target.checked ? "#fff" : "#f9f9f9";
     document.getElementById("nfseTotalSelecionado").textContent = brl.format(calcularTotal());
+    const irrfSel=document.getElementById("nfseIrrf"), irrfRate=document.getElementById("nfseIrrfRate"), irrfValor=document.getElementById("nfseIrrfValor");
+    if(irrfSel && irrfRate && irrfValor){ const v=irrfSel.value==="true"?Math.round(calcularTotal()*(Number(irrfRate.value||0)/100)*100)/100:0; irrfValor.textContent=`IRRF calculado: ${brl.format(v)}`; }
   });
 
   document.getElementById("btnEmitirNfse").addEventListener("click", async () => {
@@ -4081,6 +4235,7 @@ function renderNfseModal(invoice) {
       if (!confirmarDuplicidade) return;
     }
 
+    if (!window.confirm("CONFIRMAR EMISSÃO EM PRODUÇÃO?\n\nEsta operação poderá gerar uma NFS-e com validade fiscal. Confira cliente, serviço, valor e retenções antes de continuar.")) return;
     btn.disabled = true;
     btn.textContent = "Emitindo...";
     statusDiv.style.display = "block";
@@ -4089,7 +4244,14 @@ function renderNfseModal(invoice) {
     statusDiv.textContent = "Enviando para a prefeitura de Santos via Focus NFe...";
 
     try {
-      const result = await emitirNfse(invoice, tipoServico, valor, invoice.hbl, servicosSelecionados);
+      const fiscalOverrides = {
+        discriminacao: document.getElementById("nfseDescricaoFiscal")?.value || "",
+        issMode: document.getElementById("nfseIssMode")?.value || "auto",
+        irrf: document.getElementById("nfseIrrf")?.value === "true",
+        irrfRate: Number(document.getElementById("nfseIrrfRate")?.value || 0)
+      };
+      if (!fiscalOverrides.discriminacao.trim()) throw new Error("Informe a descrição da NFS-e.");
+      const result = await emitirNfse(invoice, tipoServico, valor, invoice.hbl, servicosSelecionados, fiscalOverrides);
 
       const inv = state.invoices.find(i => i.hbl === invoice.hbl);
       if (inv) {
@@ -4165,9 +4327,14 @@ async function consultarStatusNfse(hbl) {
       nfseItem.status = data.status || nfseItem.status;
       if (data.numero) nfseItem.numero = data.numero;
       if (data.numero_nfse) nfseItem.numero = data.numero_nfse;
+      if (data.codigo_verificacao) nfseItem.codigoVerificacao = data.codigo_verificacao;
+      if (data.codigo_verificacao_nfse) nfseItem.codigoVerificacao = data.codigo_verificacao_nfse;
       if (data.link_pdf_nota_fiscal) nfseItem.pdfUrl = data.link_pdf_nota_fiscal;
       if (data.link_pdf_nota_fiscal_completo) nfseItem.pdfUrl = data.link_pdf_nota_fiscal_completo;
-      if (nfseItem.status !== statusAnterior) atualizado = true;
+      if (data.link_xml_nota_fiscal) nfseItem.xmlUrl = data.link_xml_nota_fiscal;
+      if (data.link_xml_nota_fiscal_completo) nfseItem.xmlUrl = data.link_xml_nota_fiscal_completo;
+      if (data.caminho_xml_nota_fiscal) nfseItem.xmlUrl = data.caminho_xml_nota_fiscal;
+      if (nfseItem.status !== statusAnterior || data.numero || data.numero_nfse || data.link_pdf_nota_fiscal || data.link_pdf_nota_fiscal_completo || data.link_xml_nota_fiscal || data.link_xml_nota_fiscal_completo || data.caminho_xml_nota_fiscal) atualizado = true;
     } catch (e) {
       console.warn("Erro ao consultar NFS-e:", e.message);
     }
@@ -4267,6 +4434,10 @@ function renderNfseStatusModal(invoice) {
         const inv = state.invoices.find(i => i.hbl === cancelHbl);
         if (inv && inv.nfse && inv.nfse[cancelIdx]) {
           inv.nfse[cancelIdx].status = "cancelado";
+        }
+        const crCancel = cancelReceivableForNfse(cancelRef, cancelHbl, justificativa);
+        if (crCancel.reason === "received") {
+          addLog("warning", `CR exige análise — ${cancelHbl}`, `NFS-e ${cancelRef} foi cancelada, mas o título possui recebimento.`);
         }
         save();
         consolidateInvoices();
@@ -4382,6 +4553,10 @@ document.querySelector(".content").addEventListener("click", async (e) => {
         const n = inv.nfse.find(n => n.ref === cancelarRef);
         if (n) n.status = "cancelado";
       }
+      const crCancel = cancelReceivableForNfse(cancelarRef, cancelarHbl, justificativa);
+      if (crCancel.reason === "received") {
+        addLog("warning", `CR exige análise — ${cancelarHbl}`, `NFS-e ${cancelarRef} foi cancelada, mas o título possui recebimento.`);
+      }
       save();
       consolidateInvoices();
       render();
@@ -4420,6 +4595,27 @@ document.querySelector(".content").addEventListener("click", async (e) => {
       <div class="topbar-actions"><span class="status-pill" id="nfseCount">0 notas</span><button class="secondary-button" id="exportNfseReport">Exportar relatório</button><button class="primary-button" id="newManualNfse">+ Nova NFS-e Manual</button></div>
     </div>
     <div class="panel">
+      <div id="nfseFilters" style="display:grid;grid-template-columns:minmax(170px,1.5fr) minmax(150px,1fr) minmax(140px,1fr) minmax(135px,1fr) minmax(135px,1fr) minmax(160px,1fr) auto;gap:10px;align-items:end;margin-bottom:16px;">
+        <label style="font-size:.78rem;font-weight:700;">NFS-e / Cliente / CNPJ / HBL
+          <input id="nfseSearch" placeholder="Digite para buscar..." style="width:100%;margin-top:5px;" />
+        </label>
+        <label style="font-size:.78rem;font-weight:700;">Nº NFS-e
+          <input id="nfseNumberFilter" placeholder="Ex.: 26265" style="width:100%;margin-top:5px;" />
+        </label>
+        <label style="font-size:.78rem;font-weight:700;">Data inicial
+          <input id="nfseDateFrom" type="date" style="width:100%;margin-top:5px;" />
+        </label>
+        <label style="font-size:.78rem;font-weight:700;">Data final
+          <input id="nfseDateTo" type="date" style="width:100%;margin-top:5px;" />
+        </label>
+        <label style="font-size:.78rem;font-weight:700;">Status
+          <select id="nfseStatusFilter" style="width:100%;margin-top:5px;">
+            <option value="">Todos</option><option value="autorizado">Autorizada</option><option value="aguardando">Aguardando autorização</option><option value="erro">Erro</option><option value="cancelado">Cancelada</option>
+          </select>
+        </label>
+        <div id="nfseFilterResult" style="font-size:.78rem;color:var(--muted);padding-bottom:10px;"></div>
+        <button class="secondary-button" id="clearNfseFilters" type="button">Limpar filtros</button>
+      </div>
       <div class="table-wrap">
         <table>
           <thead>
@@ -4444,6 +4640,11 @@ document.querySelector(".content").addEventListener("click", async (e) => {
   contentEl.appendChild(section);
   section.querySelector("#newManualNfse")?.addEventListener("click", openManualNfseModal);
   section.querySelector("#exportNfseReport")?.addEventListener("click", exportNfseReport);
+  ["nfseSearch","nfseNumberFilter","nfseDateFrom","nfseDateTo","nfseStatusFilter"].forEach(id => section.querySelector("#"+id)?.addEventListener("input", renderNfseList));
+  section.querySelector("#clearNfseFilters")?.addEventListener("click", () => {
+    ["nfseSearch","nfseNumberFilter","nfseDateFrom","nfseDateTo","nfseStatusFilter"].forEach(id => { const el=section.querySelector("#"+id); if(el) el.value=""; });
+    renderNfseList();
+  });
 
   navBtn.addEventListener("click", () => {
     document.querySelectorAll(".nav-item, .view").forEach(el => el.classList.remove("active"));
@@ -4478,15 +4679,36 @@ function renderNfseList() {
   const tbody = document.getElementById("nfseListBody");
   if (!tbody) return;
 
+  const search = normalizeKey(document.getElementById("nfseSearch")?.value || "");
+  const numberFilter = normalizeKey(document.getElementById("nfseNumberFilter")?.value || "");
+  const dateFrom = document.getElementById("nfseDateFrom")?.value || "";
+  const dateTo = document.getElementById("nfseDateTo")?.value || "";
+  const statusFilter = document.getElementById("nfseStatusFilter")?.value || "";
+  const filtradas = todas.filter(({invoice,nfse:n}) => {
+    const haystack = normalizeKey([invoice.hbl, invoice.client, invoice.cnpj, n.numero, n.ref].filter(Boolean).join(" "));
+    if (search && !haystack.includes(search)) return false;
+    if (numberFilter && !normalizeKey(String(n.numero || "")).includes(numberFilter)) return false;
+    const statusKey = n.status === "autorizado" ? "autorizado" : n.status === "erro" ? "erro" : n.status === "cancelado" ? "cancelado" : "aguardando";
+    if (statusFilter && statusKey !== statusFilter) return false;
+    if (dateFrom || dateTo) {
+      const d = n.emitidaEm ? String(n.emitidaEm).slice(0,10) : "";
+      if (!d || (dateFrom && d < dateFrom) || (dateTo && d > dateTo)) return false;
+    }
+    return true;
+  });
+  const resultLabel=document.getElementById("nfseFilterResult");
+  if(resultLabel) resultLabel.textContent=`${filtradas.length} de ${todas.length} nota${todas.length===1?"":"s"}`;
+
   if (todas.length === 0) {
     tbody.innerHTML = `<tr><td colspan="8" class="empty">Nenhuma NFS-e emitida ainda.</td></tr>`;
     return;
   }
 
   // Ordenar por data de emissão (mais recente primeiro)
-  todas.sort((a, b) => (b.nfse.emitidaEm || "").localeCompare(a.nfse.emitidaEm || ""));
+  filtradas.sort((a, b) => (b.nfse.emitidaEm || "").localeCompare(a.nfse.emitidaEm || ""));
+  if (filtradas.length === 0) { tbody.innerHTML = `<tr><td colspan="8" class="empty">Nenhuma NFS-e encontrada com os filtros informados.</td></tr>`; return; }
 
-  tbody.innerHTML = todas.map(({ invoice, nfse: n }) => `
+  tbody.innerHTML = filtradas.map(({ invoice, nfse: n }) => `
     <tr>
       <td><strong>${escapeHtml(invoice.hbl)}</strong></td>
       <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(invoice.client)}</td>
@@ -4504,8 +4726,9 @@ function renderNfseList() {
       <td style="font-size:0.82rem;color:var(--muted);">${n.emitidaEm ? new Date(n.emitidaEm).toLocaleString("pt-BR") : "-"}</td>
       <td>
         <div style="display:flex;gap:6px;flex-wrap:wrap;">
-          ${n.pdfUrl ? `<a href="${escapeHtml(n.pdfUrl)}" target="_blank" class="text-button" style="font-size:0.78rem;">📄 PDF</a>` : ""}
-          ${!n.numero && n.status !== "erro" && n.status !== "cancelado" ? `<button class="text-button" data-nfse-consultar-ref="${escapeHtml(n.ref)}" data-nfse-consultar-hbl="${escapeHtml(invoice.hbl)}" style="font-size:0.78rem;color:var(--accent-3);">🔄 Atualizar</button>` : ""}
+          ${n.pdfUrl ? `<a href="${escapeHtml(n.pdfUrl)}" target="_blank" rel="noopener" class="text-button" style="font-size:0.78rem;">👁 Visualizar</a><a href="${escapeHtml(n.pdfUrl)}" download class="text-button" style="font-size:0.78rem;">⬇ PDF</a>` : ""}
+          ${n.xmlUrl ? `<a href="${escapeHtml(n.xmlUrl)}" download class="text-button" style="font-size:0.78rem;">⬇ XML</a>` : ""}
+          ${((!n.numero && n.status !== "erro" && n.status !== "cancelado") || (n.status === "autorizado" && (!n.pdfUrl || !n.xmlUrl))) ? `<button class="text-button" data-nfse-consultar-ref="${escapeHtml(n.ref)}" data-nfse-consultar-hbl="${escapeHtml(invoice.hbl)}" style="font-size:0.78rem;color:var(--accent-3);">🔄 Atualizar</button>` : ""}
           ${n.status === "autorizado" ? `<button class="text-button" data-nfse-cancelar-ref="${escapeHtml(n.ref)}" data-nfse-cancelar-hbl="${escapeHtml(invoice.hbl)}" style="font-size:0.78rem;color:var(--bad);">✕ Cancelar</button>` : ""}
         </div>
       </td>
